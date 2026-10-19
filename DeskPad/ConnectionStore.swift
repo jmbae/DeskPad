@@ -61,12 +61,12 @@ final class ConnectionStore {
     private var writable = true
     private let removeLegacyFile: (URL) throws -> Void
 
-    init(fileURL: URL? = nil, keychain: any CredentialStorage = CredentialKeychain(), defaults: UserDefaults = .standard,
+    init(fileURL: URL? = nil, keychain: (any CredentialStorage)? = nil, defaults: UserDefaults = .standard,
          removeLegacyFile: @escaping (URL) throws -> Void = { try FileManager.default.removeItem(at: $0) }) {
         self.fileURL = fileURL ?? FileManager.default.urls(
             for: .documentDirectory, in: .userDomainMask
         )[0].appendingPathComponent("deskpad-connections.json")
-        self.keychain = keychain
+        self.keychain = keychain ?? CredentialKeychain()
         self.removeLegacyFile = removeLegacyFile
         do {
             if FileManager.default.fileExists(atPath: self.fileURL.path) {
