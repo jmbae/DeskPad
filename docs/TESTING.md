@@ -8,7 +8,7 @@ xcodebuild test -project DeskPad.xcodeproj -scheme DeskPad \
   -parallel-testing-enabled NO CODE_SIGNING_ALLOWED=NO
 ```
 
-The upstream app requires iOS 27. If the local simulator runtime is iOS 26.5, add `IPHONEOS_DEPLOYMENT_TARGET=26.0` for local compatibility testing only. This does not change the committed deployment target. Verify the final Release build separately without that override:
+The upstream app requires iOS 27. If the local simulator runtime is iOS 26.5, temporarily replace `IPHONEOS_DEPLOYMENT_TARGET = 27.0;` with `IPHONEOS_DEPLOYMENT_TARGET = 26.0;` in a backed-up project.pbxproj before running tests, then restore the original file immediately afterward. Xcode destination discovery can reject the simulator even when a command-line deployment override is supplied. Never commit this temporary compatibility change. Verify the final Release build separately without that override:
 
 ```sh
 xcodebuild build -project DeskPad.xcodeproj -scheme DeskPad \
@@ -16,4 +16,4 @@ xcodebuild build -project DeskPad.xcodeproj -scheme DeskPad \
   CODE_SIGNING_ALLOWED=NO
 ```
 
-An unsigned device build is not an installable signed IPA or a TestFlight upload. Real iPad keyboard/trackpad behavior and a real Mac Screen Sharing session require separate device acceptance checks.
+An unsigned device build is not an installable signed IPA or a TestFlight upload. Standalone protocol/session/storage harnesses under Tests exercise their respective layers; run them as documented in each harness. UIKit IME tests exercise public text-input operations and emitted key events. Real iPad keyboard/trackpad behavior and a real Mac Screen Sharing session require separate device acceptance checks.
