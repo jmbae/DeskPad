@@ -56,6 +56,8 @@ final class RemoteDesktopUIView: UIView {
 
     // IME composition state (UITextInput)
     private var _markedText: String?
+    // UITextInput positions and NSRange selections are UTF-16 offsets.
+    private var _markedSelection = NSRange(location: 0, length: 0)
     private weak var _inputDelegate: (any UITextInputDelegate)?
     private lazy var _tokenizer: UITextInputStringTokenizer = UITextInputStringTokenizer(textInput: self)
 
@@ -367,48 +369,55 @@ extension RemoteDesktopUIView: UITextInput {
 
     var hasText: Bool { true }
 
-    func insertText(_ text: String) {
+    private var localTextLength: Int { (_markedText ?? "").utf16.count }
+
+    private func updateComposition(_ text: String?, selection: NSRange) {
         _inputDelegate?.textWillChange(self)
-        _markedText = nil
+        _inputDelegate?.selectionWillChange(self)
+        _markedText = text
+        let length = localTextLength
+        let location = min(max(0, selection.location), length)
+        _markedSelection = NSRange(location: location, length: min(max(0, selection.length), length - location))
+        _inputDelegate?.selectionDidChange(self)
         _inputDelegate?.textDidChange(self)
+    }
+
+    func insertText(_ text: String) {
+        updateComposition(nil, selection: NSRange(location: 0, length: 0))
         delegate?.remoteDesktopView(self, didInsertText: text)
     }
 
     func deleteBackward() {
-        if _markedText != nil {
-            // Composition in progress — clear it without sending backspace,
-            // because the marked text was never sent to VNC.
-            _inputDelegate?.textWillChange(self)
-            _markedText = nil
-            _inputDelegate?.textDidChange(self)
+        guard let marked = _markedText else {
+            delegate?.remoteDesktopViewDidDeleteBackward(self)
             return
         }
-        delegate?.remoteDesktopViewDidDeleteBackward(self)
+        var deletion = _markedSelection
+        if deletion.length == 0 {
+            guard deletion.location > 0 else { return }
+            deletion = (marked as NSString).rangeOfComposedCharacterSequence(at: deletion.location - 1)
+        }
+        let text = (marked as NSString).replacingCharacters(in: deletion, with: "")
+        updateComposition(text, selection: NSRange(location: deletion.location, length: 0))
     }
 
     // MARK: Marked Text (IME Composition)
 
     func setMarkedText(_ markedText: String?, selectedRange: NSRange) {
-        _inputDelegate?.textWillChange(self)
-        _markedText = markedText
-        _inputDelegate?.textDidChange(self)
+        updateComposition(markedText, selection: selectedRange)
     }
 
     func unmarkText() {
-        guard let text = _markedText, !text.isEmpty else {
-            _markedText = nil
-            return
+        let text = _markedText
+        updateComposition(nil, selection: NSRange(location: 0, length: 0))
+        if let text, !text.isEmpty {
+            delegate?.remoteDesktopView(self, didInsertText: text)
         }
-        _inputDelegate?.textWillChange(self)
-        _markedText = nil
-        _inputDelegate?.textDidChange(self)
-        // Commit the composed text to VNC
-        delegate?.remoteDesktopView(self, didInsertText: text)
     }
 
     var markedTextRange: UITextRange? {
-        guard let marked = _markedText, !marked.isEmpty else { return nil }
-        return SimpleTextRange(start: 0, end: marked.count)
+        guard _markedText != nil else { return nil }
+        return SimpleTextRange(start: 0, end: localTextLength)
     }
 
     var markedTextStyle: [NSAttributedString.Key: Any]? {
@@ -416,50 +425,64 @@ extension RemoteDesktopUIView: UITextInput {
         set {}
     }
 
-    // MARK: Selection & Document Positions
+    // MARK: Selection & Document Positions (UTF-16)
 
     var selectedTextRange: UITextRange? {
-        get {
-            let pos = _markedText?.count ?? 0
-            return SimpleTextRange(start: pos, end: pos)
+        get { SimpleTextRange(start: _markedSelection.location, end: NSMaxRange(_markedSelection)) }
+        set {
+            guard let newValue, let range = localRange(newValue) else { return }
+            _inputDelegate?.selectionWillChange(self)
+            _markedSelection = range
+            _inputDelegate?.selectionDidChange(self)
         }
-        set {}
     }
 
     var beginningOfDocument: UITextPosition { SimpleTextPosition(0) }
-
-    var endOfDocument: UITextPosition { SimpleTextPosition(_markedText?.count ?? 0) }
+    var endOfDocument: UITextPosition { SimpleTextPosition(localTextLength) }
 
     // MARK: Text & Range Queries
 
-    func text(in range: UITextRange) -> String? {
+    private func localRange(_ range: UITextRange) -> NSRange? {
         guard let start = range.start as? SimpleTextPosition,
               let end = range.end as? SimpleTextPosition,
-              let marked = _markedText else { return nil }
-        let s = marked.index(marked.startIndex, offsetBy: min(start.index, marked.count))
-        let e = marked.index(marked.startIndex, offsetBy: min(end.index, marked.count))
-        return String(marked[s..<e])
+              start.index >= 0, end.index >= start.index,
+              end.index <= localTextLength else { return nil }
+        return NSRange(location: start.index, length: end.index - start.index)
+    }
+
+    func text(in range: UITextRange) -> String? {
+        guard let range = localRange(range) else { return nil }
+        return ((_markedText ?? "") as NSString).substring(with: range)
     }
 
     func replace(_ range: UITextRange, withText text: String) {
-        // Not needed — we don't maintain editable text
+        guard let range = localRange(range) else { return }
+        guard let marked = _markedText else {
+            if !text.isEmpty { delegate?.remoteDesktopView(self, didInsertText: text) }
+            return
+        }
+        let updated = (marked as NSString).replacingCharacters(in: range, with: text)
+        updateComposition(updated, selection: NSRange(location: range.location + text.utf16.count, length: 0))
     }
 
     func textRange(from fromPosition: UITextPosition, to toPosition: UITextPosition) -> UITextRange? {
         guard let from = fromPosition as? SimpleTextPosition,
-              let to = toPosition as? SimpleTextPosition else { return nil }
-        return SimpleTextRange(start: from.index, end: to.index)
+              let to = toPosition as? SimpleTextPosition,
+              from.index >= 0, from.index <= localTextLength,
+              to.index >= 0, to.index <= localTextLength else { return nil }
+        return SimpleTextRange(start: min(from.index, to.index), end: max(from.index, to.index))
     }
 
     func position(from position: UITextPosition, offset: Int) -> UITextPosition? {
         guard let pos = position as? SimpleTextPosition else { return nil }
-        let newIndex = pos.index + offset
-        guard newIndex >= 0 else { return nil }
-        return SimpleTextPosition(newIndex)
+        let (target, overflow) = pos.index.addingReportingOverflow(offset)
+        guard !overflow, target >= 0, target <= localTextLength else { return nil }
+        return SimpleTextPosition(target)
     }
 
     func position(from position: UITextPosition, in direction: UITextLayoutDirection, offset: Int) -> UITextPosition? {
-        self.position(from: position, offset: (direction == .left || direction == .up) ? -offset : offset)
+        guard offset != Int.min else { return nil }
+        return self.position(from: position, offset: (direction == .left || direction == .up) ? -offset : offset)
     }
 
     func compare(_ position: UITextPosition, to other: UITextPosition) -> ComparisonResult {
