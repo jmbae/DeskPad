@@ -1,5 +1,6 @@
 import Foundation
 import CommonCrypto
+import CryptoKit
 import Security
 
 /// Apple Remote Desktop / Mac Screen Sharing authentication (RFB security type 30).
@@ -67,18 +68,17 @@ enum AppleAuthentication {
             modulus: parameters.prime,
             length: keyLength
         )
+        // Shared secret must be left-padded to keyLength before MD5.
+        // gtk-vnc / neatvnc / Java ARD clients all hash the fixed-width buffer.
         let sharedSecret = modPow(
             base: parameters.peerPublicKey,
             exponent: priv,
             modulus: parameters.prime,
             length: keyLength
         )
+        let aesKey = md5(sharedSecret)
 
-        // Match OpenSSL DH_compute_key: strip leading zeros before MD5.
-        let trimmedSecret = trimLeadingZeros(sharedSecret)
-        let aesKey = md5(trimmedSecret)
-
-        var credentials = packCredentials(
+        let credentials = packCredentials(
             username: username,
             password: password,
             randomFill: randomFill
@@ -149,11 +149,8 @@ enum AppleAuthentication {
     }
 
     static func md5(_ data: Data) -> Data {
-        var digest = [UInt8](repeating: 0, count: Int(CC_MD5_DIGEST_LENGTH))
-        data.withUnsafeBytes { ptr in
-            _ = CC_MD5(ptr.baseAddress, CC_LONG(data.count), &digest)
-        }
-        return Data(digest)
+        // ARD protocol requires MD5; CryptoKit exposes it under Insecure for this use.
+        Data(Insecure.MD5.hash(data: data))
     }
 
     // MARK: - Helpers
@@ -172,13 +169,6 @@ enum AppleAuthentication {
             }
         }
         throw AuthError.cryptographyFailed
-    }
-
-    private static func trimLeadingZeros(_ data: Data) -> Data {
-        if let firstNonZero = data.firstIndex(where: { $0 != 0 }) {
-            return Data(data[firstNonZero...])
-        }
-        return Data([0])
     }
 }
 

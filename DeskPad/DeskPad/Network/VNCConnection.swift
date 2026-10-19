@@ -331,23 +331,9 @@ final class VNCConnection {
                 if success {
                     self.sendClientInit()
                 } else {
-                    // RFB 3.8 may include a reason string after a failed SecurityResult.
-                    self.receiveExact(count: 4) { lengthData in
-                        let length = (try? RFBDataCursor(data: lengthData).readUInt32()) ?? 0
-                        guard length > 0, length < 4096 else {
-                            self.state = .failed("Authentication failed. Check username and password.")
-                            return
-                        }
-                        self.receiveExact(count: Int(length)) { reasonData in
-                            let reason = String(data: reasonData, encoding: .utf8)?
-                                .trimmingCharacters(in: .whitespacesAndNewlines)
-                            if let reason, !reason.isEmpty {
-                                self.state = .failed("Authentication failed: \(reason)")
-                            } else {
-                                self.state = .failed("Authentication failed. Check username and password.")
-                            }
-                        }
-                    }
+                    // Mac Screen Sharing typically sends only the 4-byte failure code
+                    // with no reason string. Waiting for more bytes hangs the handshake.
+                    self.state = .failed("Authentication failed. Check username and password.")
                 }
             } catch {
                 self.state = .failed("Auth result decode failed")

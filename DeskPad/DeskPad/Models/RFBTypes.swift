@@ -40,18 +40,18 @@ enum RFBSecurityType: UInt8 {
             if available.contains(.appleDiffieHellman) { return .appleDiffieHellman }
             if available.contains(.vncAuthentication) { return .vncAuthentication }
             if available.contains(.plain) { return .plain }
-            if available.contains(.none) { return .none }
+            if available.contains(RFBSecurityType.none) { return RFBSecurityType.none }
             return nil
         }
 
         if hasPassword {
             if available.contains(.vncAuthentication) { return .vncAuthentication }
             if available.contains(.plain) { return .plain }
-            if available.contains(.none) { return .none }
+            if available.contains(RFBSecurityType.none) { return RFBSecurityType.none }
             return nil
         }
 
-        if available.contains(.none) { return .none }
+        if available.contains(RFBSecurityType.none) { return RFBSecurityType.none }
         if available.contains(.vncAuthentication) { return .vncAuthentication }
         return nil
     }

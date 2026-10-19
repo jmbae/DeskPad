@@ -166,8 +166,8 @@ struct AppleAuthenticationTests {
     @Test func buildsAuthPacketForLargerPrimeMatchingIndependentVector() throws {
         // p=104729 (0x019919), g=2, peer=32 (0x000020), priv=7
         // clientPublic = 2^7 mod 104729 = 128
-        // sharedSecret = 32^7 mod 104729 = 38590
-        // Expected ciphertext from Python cryptography.
+        // sharedSecret = 32^7 mod 104729 = 38590 → padded 00 96 be
+        // AES key = MD5(padded shared) — matches gtk-vnc / neatvnc.
         let params = AppleAuthentication.ServerParameters(
             generator: Data([0x00, 0x02]),
             keyLength: 3,
@@ -175,14 +175,14 @@ struct AppleAuthenticationTests {
             peerPublicKey: Data([0x00, 0x00, 0x20])
         )
         let expected = Data(hex:
-            "e67c32c583f5a3ea5bbe5a753696a17c" +
-            "3311308a084badd22bf78605894b433f" +
-            "3311308a084badd22bf78605894b433f" +
-            "3311308a084badd22bf78605894b433f" +
-            "63e56b9864beef317df3ae6ff12fd286" +
-            "3311308a084badd22bf78605894b433f" +
-            "3311308a084badd22bf78605894b433f" +
-            "3311308a084badd22bf78605894b433f" +
+            "9388808fdd69f19d4fdaffac569edb98" +
+            "9acfa88c3c7e55c7a1387a666d32d71d" +
+            "9acfa88c3c7e55c7a1387a666d32d71d" +
+            "9acfa88c3c7e55c7a1387a666d32d71d" +
+            "847d3af86fe02e83f71ac548760afc94" +
+            "9acfa88c3c7e55c7a1387a666d32d71d" +
+            "9acfa88c3c7e55c7a1387a666d32d71d" +
+            "9acfa88c3c7e55c7a1387a666d32d71d" +
             "000080"
         )
 
@@ -195,6 +195,29 @@ struct AppleAuthenticationTests {
         )
 
         #expect(response == expected)
+    }
+
+    @Test func modPowMatchesIndependent512BitDiffieHellmanVector() {
+        let prime = Data(hex:
+            "aafb8ba347ce57d712518f83ee885b17b8002794fe3ed7bb38478fafaf5158ce" +
+            "c09e156bad1ef9d790acc9f9e6455693c0da9bb40ba2e577e41ea5efc9c6b55f"
+        )
+        let privateKey = Data(hex:
+            "0000000000000000000000000000000000000000000000000000000000000000" +
+            "000000000000000000000000000000000000000000000000ab54a98ceb1f0ad2"
+        )
+        let expectedPublic = Data(hex:
+            "1fb9dcfd3a91b848d838c21e2cee4c3de4f92cb3d131e20c1577efafbac7aa3b" +
+            "c6e98f0d5747a7cff063cc52d75c422bb058c6d787bf2d48394ccb516b48fe25"
+        )
+
+        let publicKey = AppleAuthentication.modPow(
+            base: Data([0x00, 0x02]),
+            exponent: privateKey,
+            modulus: prime,
+            length: 64
+        )
+        #expect(publicKey == expectedPublic)
     }
 
     @Test func encryptsUTF8MacAccountNamesInsideAuthPacket() throws {
