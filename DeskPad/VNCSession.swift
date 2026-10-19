@@ -4,6 +4,26 @@ import Observation
 import CryptoKit
 import CommonCrypto
 import Security
+#if DEBUG
+import os
+
+// Counts and protocol sizes only: never log key values, pointer positions,
+// credentials, clipboard contents, host names, or server-provided text.
+nonisolated enum VNCControlDiagnostics {
+    static let logger = Logger(subsystem: "com.africastart.DeskPad", category: "ControlDiagnostics")
+    static func stateTag(_ state: VNCConnectionState) -> String {
+        switch state {
+        case .disconnected: "disconnected"
+        case .connecting: "connecting"
+        case .handshaking: "handshaking"
+        case .authenticating: "authenticating"
+        case .initializing: "initializing"
+        case .connected: "connected"
+        case .failed: "failed"
+        }
+    }
+}
+#endif
 
 enum VNCConnectionState: Equatable {
     case disconnected
@@ -30,7 +50,15 @@ enum VNCConnectionState: Equatable {
 @Observable
 @MainActor
 final class VNCSessionModel {
-    private(set) var state: VNCConnectionState = .disconnected
+    private(set) var state: VNCConnectionState = .disconnected {
+        didSet {
+            #if DEBUG
+            if state != oldValue {
+                VNCControlDiagnostics.logger.notice("state=\(VNCControlDiagnostics.stateTag(self.state), privacy: .public)")
+            }
+            #endif
+        }
+    }
     private(set) var framebuffer = Data()
     private(set) var screenWidth = 0
     private(set) var screenHeight = 0
@@ -40,6 +68,12 @@ final class VNCSessionModel {
     private(set) var clipboardError: String?
     private var generation = UUID()
     private var inputTask: Task<Void, Never>?
+    #if DEBUG
+    private var inputCallbacks = 0
+    private var inputAccepted = 0
+    private var inputDropped = 0
+    private var inputCompleted = 0
+    #endif
     private var client: RFBClient?
     private var sessionTask: Task<Void, Never>?
 
@@ -105,13 +139,34 @@ final class VNCSessionModel {
 
     private func enqueueInput(allowReleaseWhenInitializing: Bool = false, _ operation: @escaping @Sendable (RFBClient) async throws -> Void) {
         let canRelease = allowReleaseWhenInitializing && state == .initializing && screenWidth > 0 && screenHeight > 0
-        guard state == .connected || canRelease, let client else { return }
+        #if DEBUG
+        inputCallbacks += 1
+        #endif
+        guard state == .connected || canRelease, let client else {
+            #if DEBUG
+            inputDropped += 1
+            VNCControlDiagnostics.logger.notice("input dropped callbacks=\(self.inputCallbacks) dropped=\(self.inputDropped) state=\(VNCControlDiagnostics.stateTag(self.state), privacy: .public)")
+            #endif
+            return
+        }
+        #if DEBUG
+        inputAccepted += 1
+        VNCControlDiagnostics.logger.notice("input accepted callbacks=\(self.inputCallbacks) accepted=\(self.inputAccepted)")
+        #endif
         let generation = self.generation
         let previous = inputTask
         inputTask = Task { [weak self] in
             await previous?.value
             guard !Task.isCancelled, self?.generation == generation else { return }
-            do { try await operation(client) }
+            do {
+                try await operation(client)
+                #if DEBUG
+                if let self, self.generation == generation {
+                    self.inputCompleted += 1
+                    VNCControlDiagnostics.logger.notice("input send completed=\(self.inputCompleted)")
+                }
+                #endif
+            }
             catch { self?.fail(error, generation: generation) }
         }
     }
@@ -334,6 +389,9 @@ private actor RFBClient {
         width = Int(dimensions.readUInt16(at: 0))
         height = Int(dimensions.readUInt16(at: 2))
         try validateDimensions(width: width, height: height)
+        #if DEBUG
+        VNCControlDiagnostics.logger.notice("server dimensions width=\(self.width) height=\(self.height)")
+        #endif
 
         let serverPixelFormat = try await readExactly(16)
         guard serverPixelFormat.count == 16 else {
@@ -368,6 +426,9 @@ private actor RFBClient {
 
     private func expireFirstFrame() {
         guard !hasFrame else { return }
+        #if DEBUG
+        VNCControlDiagnostics.logger.notice("first frame deadline expired")
+        #endif
         connection?.cancel()
     }
 
@@ -682,7 +743,15 @@ private actor RFBClient {
                 guard !dataLength.overflow else {
                     throw ClientError.invalidServerMessage("Raw 데이터 길이 overflow.")
                 }
+                #if DEBUG
+                let rawReadStarted = Date()
+                VNCControlDiagnostics.logger.notice("raw read begin bytes=\(dataLength.partialValue) width=\(rectWidth) height=\(rectHeight)")
+                #endif
                 let raw = try await readExactly(dataLength.partialValue)
+                #if DEBUG
+                let elapsedMilliseconds = Int(Date().timeIntervalSince(rawReadStarted) * 1_000)
+                VNCControlDiagnostics.logger.notice("raw read complete bytes=\(raw.count) elapsed_ms=\(elapsedMilliseconds)")
+                #endif
                 if rectWidth > 0 && rectHeight > 0 {
                     hasFrame = true
                     firstFrameTimeout?.cancel()
