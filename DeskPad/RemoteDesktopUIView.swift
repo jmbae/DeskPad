@@ -1,4 +1,7 @@
 import UIKit
+#if DEBUG
+import os
+#endif
 
 // MARK: - Text Input Helpers
 
@@ -24,6 +27,14 @@ private class SimpleTextRange: UITextRange {
 }
 
 final class RemoteDesktopUIView: UIView {
+
+    #if DEBUG
+    private var diagnosticCallbackCount = 0
+    private func recordInputCallback(_ kind: String) {
+        diagnosticCallbackCount += 1
+        VNCControlDiagnostics.logger.notice("ui callback kind=\(kind, privacy: .public) count=\(self.diagnosticCallbackCount)")
+    }
+    #endif
 
     var onKey: ((UInt32, Bool) -> Void)?
     var onPointer: ((CGPoint, UInt8) -> Void)?
@@ -258,6 +269,9 @@ final class RemoteDesktopUIView: UIView {
     }
 
     @objc private func handleTap(_ recognizer: UITapGestureRecognizer) {
+        #if DEBUG
+        recordInputCallback("tap")
+        #endif
         guard recognizer.state == .ended else { return }
         let viewPoint = recognizer.location(in: self)
         let desktopPoint = viewPointToDesktopPoint(viewPoint)
@@ -276,6 +290,9 @@ final class RemoteDesktopUIView: UIView {
     }
 
     @objc private func handleRightClick(_ recognizer: UITapGestureRecognizer) {
+        #if DEBUG
+        recordInputCallback("rightClick")
+        #endif
         guard recognizer.state == .ended else { return }
         let viewPoint = recognizer.location(in: self)
         let desktopPoint = viewPointToDesktopPoint(viewPoint)
@@ -348,6 +365,9 @@ final class RemoteDesktopUIView: UIView {
         return Self.keysym(for: code) != nil || !modifiers.intersection([.control, .alternate, .command]).isEmpty
     }
     override func pressesBegan(_ presses: Set<UIPress>, with event: UIPressesEvent?) {
+        #if DEBUG
+        recordInputCallback("pressesBegan")
+        #endif
         var unhandled = Set<UIPress>()
         for press in presses {
             guard let key = press.key, handlesDirectly(code: key.keyCode, modifiers: key.modifierFlags) else {
@@ -445,6 +465,9 @@ extension RemoteDesktopUIView: UITextInput {
     }
 
     func insertText(_ text: String) {
+        #if DEBUG
+        recordInputCallback("insertText")
+        #endif
         updateComposition(nil, selection: NSRange(location: 0, length: 0))
         sendText(text)
     }
