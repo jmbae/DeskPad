@@ -36,86 +36,131 @@ final class VNCSessionModel {
     private(set) var screenHeight = 0
     private(set) var errorDetails: String?
 
+    private(set) var receivedClipboard: String?
+    private(set) var clipboardError: String?
+    private var generation = UUID()
+    private var inputTask: Task<Void, Never>?
     private var client: RFBClient?
     private var sessionTask: Task<Void, Never>?
 
     func connect(to savedConnection: SavedConnection, password: String? = nil) {
         disconnect()
+        let generation = self.generation
         let client = RFBClient(
             host: savedConnection.host,
             port: savedConnection.port,
             username: savedConnection.username,
             password: password,
-            model: self
+            model: self,
+            generation: generation
         )
         self.client = client
         state = .connecting
-        sessionTask = Task {
+        sessionTask = Task { [weak self] in
             do {
                 try await client.run()
             } catch is CancellationError {
-                state = .disconnected
+                // Explicit disconnect already resets the model; input failures retain their error.
             } catch {
-                state = .failed(error.localizedDescription)
-                errorDetails = String(describing: error)
-                await client.close()
+                self?.fail(error, generation: generation)
             }
+            await client.close()
         }
     }
 
+    isolated deinit {
+        sessionTask?.cancel()
+        inputTask?.cancel()
+        if let client { Task { await client.close() } }
+    }
+
     func disconnect() {
+        generation = UUID()
         sessionTask?.cancel()
         sessionTask = nil
-        if let client {
-            Task { await client.close() }
-        }
+        inputTask?.cancel()
+        inputTask = nil
+        if let client { Task { await client.close() } }
         client = nil
         framebuffer = Data()
         screenWidth = 0
         screenHeight = 0
         errorDetails = nil
+        receivedClipboard = nil
+        clipboardError = nil
         state = .disconnected
     }
 
-    func sendPointer(x: Int, y: Int, buttonMask: UInt8) {
+    private func fail(_ error: Error, generation: UUID) {
+        guard self.generation == generation else { return }
+        reportError(error.localizedDescription)
+        errorDetails = String(describing: error)
+    }
+
+    func reportError(_ message: String) {
+        disconnect()
+        state = .failed(message)
+        errorDetails = message
+    }
+
+    private func enqueueInput(_ operation: @escaping @Sendable (RFBClient) async throws -> Void) {
         guard case .connected = state, let client else { return }
+        let generation = self.generation
+        let previous = inputTask
+        inputTask = Task { [weak self] in
+            await previous?.value
+            guard !Task.isCancelled, self?.generation == generation else { return }
+            do { try await operation(client) }
+            catch { self?.fail(error, generation: generation) }
+        }
+    }
+
+    func sendPointer(x: Int, y: Int, buttonMask: UInt8) {
+        guard case .connected = state else { return }
         let boundedX = min(max(x, 0), max(screenWidth - 1, 0))
         let boundedY = min(max(y, 0), max(screenHeight - 1, 0))
-        Task {
-            do {
-                try await client.sendPointer(x: UInt16(boundedX), y: UInt16(boundedY), buttonMask: buttonMask)
-            } catch {
-                state = .failed(error.localizedDescription)
-                errorDetails = String(describing: error)
-            }
+        enqueueInput { client in
+            try await client.sendPointer(x: UInt16(boundedX), y: UInt16(boundedY), buttonMask: buttonMask)
         }
     }
 
     func sendKey(keysym: UInt32, pressed: Bool) {
-        guard case .connected = state, let client else { return }
-        Task {
-            do {
-                try await client.sendKey(keysym: keysym, pressed: pressed)
-            } catch {
-                state = .failed(error.localizedDescription)
-                errorDetails = String(describing: error)
-            }
-        }
+        enqueueInput { client in try await client.sendKey(keysym: keysym, pressed: pressed) }
     }
 
-    func setState(_ state: VNCConnectionState) {
+    func sendClipboard(text: String) {
+        guard let bytes = text.data(using: .isoLatin1, allowLossyConversion: false), bytes.count <= 1_048_576 else {
+            clipboardError = "서버는 Latin-1 클립보드만 지원합니다. Latin-1 문자로 1 MiB 이하의 텍스트를 보내세요."
+            return
+        }
+        clipboardError = nil
+        enqueueInput { client in try await client.sendClipboard(bytes: bytes) }
+    }
+
+    fileprivate func setState(_ state: VNCConnectionState, generation: UUID) {
+        guard self.generation == generation else { return }
         self.state = state
     }
 
-    fileprivate func setScreen(width: Int, height: Int, framebuffer: Data) {
+    fileprivate func setScreen(width: Int, height: Int, framebuffer: Data, generation: UUID) {
+        guard self.generation == generation else { return }
+        state = .initializing
         screenWidth = width
         screenHeight = height
         self.framebuffer = framebuffer
     }
 
-    fileprivate func setFramebuffer(_ framebuffer: Data) {
+    fileprivate func setFramebuffer(_ framebuffer: Data, generation: UUID) {
+        guard self.generation == generation else { return }
         self.framebuffer = framebuffer
+        state = .connected
     }
+
+    fileprivate func setClipboard(_ text: String, generation: UUID) {
+        guard self.generation == generation else { return }
+        receivedClipboard = text
+    }
+
 }
 
 private actor RFBClient {
@@ -145,7 +190,7 @@ private actor RFBClient {
             case .usernameRequired:
                 return "Apple 화면 공유 인증에는 Mac 계정 사용자 이름이 필요합니다. 연결 설정에 사용자 이름과 Mac 계정 암호를 입력하세요."
             case .invalidCredentialLength:
-                return "Mac 계정 사용자 이름과 암호는 각각 UTF-8 기준 63바이트 이하여야 합니다."
+                return "Mac 계정 사용자 이름과 암호는 각각 UTF-8 기준 63바이트 이하이며 NUL 문자를 포함하지 않아야 합니다."
             case .authenticationFailed:
                 return "화면 공유 인증에 실패했습니다. Mac 계정 사용자 이름과 암호를 확인하세요."
             case .encryptionFailed:
@@ -163,7 +208,10 @@ private actor RFBClient {
     private let port: UInt16
     private let username: String
     private let password: String?
-    private let model: VNCSessionModel
+    private weak var model: VNCSessionModel?
+    private let generation: UUID
+    private var hasFrame = false
+    private var firstFrameTimeout: Task<Void, Never>?
     private let queue = DispatchQueue(label: "DeskPad.RFBTransport")
     private var connection: NWConnection?
     private var pixels = Data()
@@ -173,12 +221,13 @@ private actor RFBClient {
     private let maximumPixels = 32_000_000
     private let responseTimeout: DispatchTimeInterval = .seconds(20)
 
-    init(host: String, port: UInt16, username: String, password: String?, model: VNCSessionModel) {
+    init(host: String, port: UInt16, username: String, password: String?, model: VNCSessionModel, generation: UUID) {
         self.host = host
         self.port = port
         self.username = username
         self.password = password
         self.model = model
+        self.generation = generation
     }
 
     func run() async throws {
@@ -189,7 +238,7 @@ private actor RFBClient {
         self.connection = connection
         try await start(connection)
 
-        await model.setState(.handshaking)
+        await model?.setState(.handshaking, generation: generation)
         let serverVersion = try await readExactly(12)
         guard serverVersion.starts(with: Data("RFB ".utf8)),
               serverVersion.suffix(1) == Data([10]),
@@ -199,11 +248,11 @@ private actor RFBClient {
               serverMinor >= 3 else {
             throw ClientError.invalidServerMessage("버전 문자열이 올바르지 않습니다.")
         }
-        let negotiatedMinor = min(serverMinor, 8)
+        let negotiatedMinor: UInt16 = serverMinor >= 8 ? 8 : (serverMinor >= 7 ? 7 : 3)
         let version = String(format: "RFB 003.%03d\n", negotiatedMinor)
         try await send(Data(version.utf8))
 
-        await model.setState(.authenticating)
+        await model?.setState(.authenticating, generation: generation)
         let selectedSecurityType: UInt32
         if negotiatedMinor == 3 {
             selectedSecurityType = try await readUInt32()
@@ -262,7 +311,7 @@ private actor RFBClient {
             try await authenticateAppleDiffieHellman(username: username, password: password)
         }
 
-        if negotiatedMinor >= 8 || (selectedSecurityType == 2 && negotiatedMinor >= 7) {
+        if negotiatedMinor >= 8 || selectedSecurityType == 2 || selectedSecurityType == 30 {
             let securityResult = try await readUInt32()
             guard securityResult == 0 else {
                 if negotiatedMinor >= 8 {
@@ -277,7 +326,7 @@ private actor RFBClient {
             }
         }
 
-        await model.setState(.initializing)
+        await model?.setState(.initializing, generation: generation)
         try await send(Data([1]))
         let dimensions = try await readExactly(4)
         width = Int(dimensions.readUInt16(at: 0))
@@ -298,15 +347,30 @@ private actor RFBClient {
         try await sendPixelFormat()
         try await sendEncodings()
         try await requestUpdate(incremental: false)
-        await model.setScreen(width: width, height: height, framebuffer: pixels)
-        await model.setState(.connected)
+        await model?.setScreen(width: width, height: height, framebuffer: Data(), generation: generation)
+        armFirstFrameTimeout()
 
         while !Task.isCancelled {
             try await readServerMessage()
         }
     }
 
+    private func armFirstFrameTimeout() {
+        firstFrameTimeout?.cancel()
+        firstFrameTimeout = Task { [weak self] in
+            do { try await Task.sleep(for: .seconds(20)) } catch { return }
+            await self?.expireFirstFrame()
+        }
+    }
+
+    private func expireFirstFrame() {
+        guard !hasFrame else { return }
+        connection?.cancel()
+    }
+
     func close() {
+        firstFrameTimeout?.cancel()
+        firstFrameTimeout = nil
         connection?.cancel()
         connection = nil
         pixels.removeAll(keepingCapacity: false)
@@ -325,87 +389,90 @@ private actor RFBClient {
         try await send(message)
     }
 
-    private func start(_ connection: NWConnection) async throws {
-        try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
-            let resumed = ResumeOnce()
-            queue.asyncAfter(deadline: .now() + responseTimeout) {
-                resumed.resume(
-                    continuation,
-                    throwing: ClientError.connection("서버 응답 시간 초과.")
-                )
-            }
-            connection.stateUpdateHandler = { state in
-                switch state {
-                case .ready:
-                    resumed.resume(continuation, returning: ())
-                case .failed(let error):
-                    resumed.resume(continuation, throwing: ClientError.connection(error.localizedDescription))
-                case .cancelled:
-                    resumed.resume(continuation, throwing: CancellationError())
-                default:
-                    break
-                }
-            }
-            connection.start(queue: queue)
+    func sendClipboard(bytes: Data) async throws {
+        guard bytes.count <= 1_048_576 else {
+            throw ClientError.invalidServerMessage("클립보드 데이터가 너무 깁니다.")
         }
+        var message = Data([6, 0, 0, 0])
+        message.appendUInt32(UInt32(bytes.count))
+        message.append(bytes)
+        try await send(message)
     }
 
-    private func readExactly(_ count: Int) async throws -> Data {
+    private func start(_ connection: NWConnection) async throws {
+        try Task.checkCancellation()
+        try await withTaskCancellationHandler {
+            let timeout = DispatchWorkItem { connection.cancel() }
+            queue.asyncAfter(deadline: .now() + responseTimeout, execute: timeout)
+            defer { timeout.cancel() }
+            try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
+                let resumed = ResumeOnce()
+                connection.stateUpdateHandler = { state in
+                    switch state {
+                    case .ready: resumed.resume(continuation, returning: ())
+                    case .failed(let error):
+                        resumed.resume(continuation, throwing: ClientError.connection(error.localizedDescription))
+                    case .cancelled:
+                        resumed.resume(continuation, throwing: ClientError.connection("연결이 취소되었거나 서버 응답 시간이 초과되었습니다."))
+                    default: break
+                    }
+                }
+                connection.start(queue: queue)
+            }
+            try Task.checkCancellation()
+        } onCancel: { connection.cancel() }
+    }
+
+    private func readExactly(_ count: Int, timeoutEnabled: Bool = true) async throws -> Data {
         guard count >= 0, count <= 128 * 1024 * 1024 else {
             throw ClientError.invalidServerMessage("요청된 데이터 길이가 허용 범위를 벗어났습니다.")
         }
-        var result = Data()
-        result.reserveCapacity(count)
-        while result.count < count {
-            try Task.checkCancellation()
-            let remaining = count - result.count
-            guard let connection else { throw CancellationError() }
-            let chunk: Data = try await withCheckedThrowingContinuation {
-                (continuation: CheckedContinuation<Data, Error>) in
-                let resumed = ResumeOnce()
-                queue.asyncAfter(deadline: .now() + responseTimeout) {
-                    resumed.resume(
-                        continuation,
-                        throwing: ClientError.connection("서버 응답 시간 초과.")
-                    )
-                }
-                connection.receive(
-                    minimumIncompleteLength: 1,
-                    maximumLength: remaining
-                ) { data, _, isComplete, error in
-                    if let error {
-                        resumed.resume(continuation, throwing: ClientError.connection(error.localizedDescription))
-                    } else if let data, !data.isEmpty {
-                        resumed.resume(continuation, returning: data)
-                    } else if isComplete {
-                        resumed.resume(
-                            continuation,
-                            throwing: ClientError.connection("서버가 연결을 종료했습니다.")
-                        )
-                    } else {
-                        resumed.resume(
-                            continuation,
-                            throwing: ClientError.connection("서버에서 데이터를 받지 못했습니다.")
-                        )
+        try Task.checkCancellation()
+        guard let connection else { throw CancellationError() }
+        return try await withTaskCancellationHandler {
+            let timeout = DispatchWorkItem { connection.cancel() }
+            if timeoutEnabled { queue.asyncAfter(deadline: .now() + responseTimeout, execute: timeout) }
+            defer { timeout.cancel() }
+            var result = Data()
+            result.reserveCapacity(count)
+            while result.count < count {
+                try Task.checkCancellation()
+                let remaining = count - result.count
+                let chunk: Data = try await withCheckedThrowingContinuation {
+                    (continuation: CheckedContinuation<Data, Error>) in
+                    connection.receive(minimumIncompleteLength: 1, maximumLength: remaining) { data, _, isComplete, error in
+                        if let error {
+                            continuation.resume(throwing: ClientError.connection(error.localizedDescription))
+                        } else if let data, !data.isEmpty {
+                            continuation.resume(returning: data)
+                        } else {
+                            continuation.resume(throwing: ClientError.connection(isComplete ? "서버가 연결을 종료했습니다." : "서버에서 데이터를 받지 못했습니다."))
+                        }
                     }
                 }
+                result.append(chunk)
             }
-            result.append(chunk)
-        }
-        return result
+            try Task.checkCancellation()
+            return result
+        } onCancel: { connection.cancel() }
     }
 
     private func send(_ data: Data) async throws {
+        try Task.checkCancellation()
         guard let connection else { throw CancellationError() }
-        try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
-            connection.send(content: data, completion: .contentProcessed { error in
-                if let error {
-                    continuation.resume(throwing: ClientError.connection(error.localizedDescription))
-                } else {
-                    continuation.resume(returning: ())
-                }
-            })
-        }
+        try await withTaskCancellationHandler {
+            let timeout = DispatchWorkItem { connection.cancel() }
+            queue.asyncAfter(deadline: .now() + responseTimeout, execute: timeout)
+            defer { timeout.cancel() }
+            try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
+                connection.send(content: data, completion: .contentProcessed { error in
+                    if let error {
+                        continuation.resume(throwing: ClientError.connection(error.localizedDescription))
+                    } else { continuation.resume(returning: ()) }
+                })
+            }
+            try Task.checkCancellation()
+        } onCancel: { connection.cancel() }
     }
 
     private func readUInt32() async throws -> UInt32 {
@@ -450,6 +517,12 @@ private actor RFBClient {
     }
 
     private func authenticateAppleDiffieHellman(username: String, password: String) async throws {
+        let usernameBytes = Array(username.utf8)
+        let passwordBytes = Array(password.utf8)
+        guard usernameBytes.count < 64, passwordBytes.count < 64,
+              !usernameBytes.contains(0), !passwordBytes.contains(0) else {
+            throw ClientError.invalidCredentialLength
+        }
         let parameters = try await readExactly(4)
         let generator = UInt32(parameters.readUInt16(at: 0))
         let keyLength = Int(parameters.readUInt16(at: 2))
@@ -480,16 +553,11 @@ private actor RFBClient {
         privateBytes[0] |= 0x80
         privateBytes[privateBytes.count - 1] |= 1
         let privateKey = DHInteger(bigEndian: privateBytes)
-        let clientPublicKey = DHInteger.power(UInt32(generator), exponent: privateKey, modulus: modulusInteger)
-        let sharedSecret = DHInteger.power(serverPublicInteger, exponent: privateKey, modulus: modulusInteger)
+        try Task.checkCancellation()
+        let clientPublicKey = try DHInteger.power(UInt32(generator), exponent: privateKey, modulus: modulusInteger)
+        let sharedSecret = try DHInteger.power(serverPublicInteger, exponent: privateKey, modulus: modulusInteger)
         let sharedBytes = sharedSecret.bigEndianData(length: keyLength)
         let digest = Array(Insecure.MD5.hash(data: sharedBytes))
-
-        let usernameBytes = Array(username.utf8)
-        let passwordBytes = Array(password.utf8)
-        guard usernameBytes.count < 64, passwordBytes.count < 64 else {
-            throw ClientError.invalidCredentialLength
-        }
 
         var credentials = Data(count: 128)
         let credentialCount = credentials.count
@@ -561,11 +629,11 @@ private actor RFBClient {
     }
 
     private func readServerMessage() async throws {
-        let messageType = try await readExactly(1)[0]
+        let messageType = try await readExactly(1, timeoutEnabled: !hasFrame)[0]
         switch messageType {
         case 0:
-            try await readFramebufferUpdate()
-            try await requestUpdate(incremental: true)
+            let resized = try await readFramebufferUpdate()
+            try await requestUpdate(incremental: !resized)
         case 2:
             break
         case 3:
@@ -574,13 +642,15 @@ private actor RFBClient {
             guard length <= 1_048_576 else {
                 throw ClientError.invalidServerMessage("클립보드 데이터가 너무 깁니다.")
             }
-            _ = try await readExactly(Int(length))
+            let clipboard = try await readExactly(Int(length))
+            await model?.setClipboard(String(data: clipboard, encoding: .isoLatin1) ?? "", generation: generation)
         default:
             throw ClientError.invalidServerMessage("지원하지 않는 서버 메시지 유형 \(messageType).")
         }
     }
 
-    private func readFramebufferUpdate() async throws {
+    private func readFramebufferUpdate() async throws -> Bool {
+        var resized = false
         let header = try await readExactly(3)
         let rectangleCount = Int(header.readUInt16(at: 1))
         guard rectangleCount <= 4096 else {
@@ -610,6 +680,11 @@ private actor RFBClient {
                     throw ClientError.invalidServerMessage("Raw 데이터 길이 overflow.")
                 }
                 let raw = try await readExactly(dataLength.partialValue)
+                if rectWidth > 0 && rectHeight > 0 {
+                    hasFrame = true
+                    firstFrameTimeout?.cancel()
+                    firstFrameTimeout = nil
+                }
                 copyRaw(raw, x: x, y: y, width: rectWidth, height: rectHeight)
             case 1:
                 let source = try await readExactly(4)
@@ -628,13 +703,16 @@ private actor RFBClient {
                 width = newWidth
                 height = newHeight
                 pixels = Data(repeating: 0, count: width * height * 4)
-                await model.setScreen(width: width, height: height, framebuffer: pixels)
-                try await requestUpdate(incremental: false)
+                hasFrame = false
+                resized = true
+                armFirstFrameTimeout()
+                await model?.setScreen(width: width, height: height, framebuffer: Data(), generation: generation)
             default:
                 throw ClientError.invalidServerMessage("지원하지 않는 인코딩 \(encoding).")
             }
         }
-        await model.setFramebuffer(pixels)
+        if hasFrame { await model?.setFramebuffer(pixels, generation: generation) }
+        return resized
     }
 
     private func validateDimensions(width: Int, height: Int) throws {
@@ -764,15 +842,16 @@ nonisolated private struct DHInteger: Comparable, Sendable {
         return DHInteger(words: difference, wordCount: count)
     }
 
-    static func power(_ base: UInt32, exponent: DHInteger, modulus: DHInteger) -> DHInteger {
-        power(DHInteger(value: base, wordCount: modulus.words.count), exponent: exponent, modulus: modulus)
+    static func power(_ base: UInt32, exponent: DHInteger, modulus: DHInteger) throws -> DHInteger {
+        try power(DHInteger(value: base, wordCount: modulus.words.count), exponent: exponent, modulus: modulus)
     }
 
-    static func power(_ base: DHInteger, exponent: DHInteger, modulus: DHInteger) -> DHInteger {
+    static func power(_ base: DHInteger, exponent: DHInteger, modulus: DHInteger) throws -> DHInteger {
         let wordCount = modulus.words.count
         let one = DHInteger(value: 1, wordCount: wordCount)
         var rSquared = one
-        for _ in 0..<(wordCount * 64) {
+        for step in 0..<(wordCount * 64) {
+            if step % 64 == 0 { try Task.checkCancellation() }
             rSquared = addModulo(rSquared, rSquared, modulus: modulus)
         }
         var result = montgomeryMultiply(one, rSquared, modulus: modulus)
@@ -783,6 +862,7 @@ nonisolated private struct DHInteger: Comparable, Sendable {
         )
         guard exponent.bitWidth > 0 else { return one }
         for bit in (0..<exponent.bitWidth).reversed() {
+            try Task.checkCancellation()
             result = montgomeryMultiply(result, result, modulus: modulus)
             if exponent.bit(at: bit) {
                 result = montgomeryMultiply(result, normalizedBase, modulus: modulus)
