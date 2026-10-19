@@ -404,9 +404,6 @@ private extension VNCSessionModel {
         }
     }
 
-    func reportError(_ message: String) {
-        setState(.failed(message))
-    }
 }
 
 private struct UserMessage: Identifiable {
