@@ -47,6 +47,11 @@ final class RemoteDesktopUIView: UIView {
         updateComposition(nil, selection: NSRange(location: 0, length: 0))
     }
     func keyDown(code: UIKeyboardHIDUsage, keysym: UInt32) {
+        // Commit before a shortcut modifier reaches the server, while Shift remains
+        // available to the local IME for composing shifted characters.
+        if _markedText != nil, code != .keyboardLeftShift, code != .keyboardRightShift {
+            unmarkText()
+        }
         pressedKeys[code] = keysym; onKey?(keysym, true)
     }
     private func sendText(_ text: String) {
@@ -350,7 +355,6 @@ final class RemoteDesktopUIView: UIView {
             }
             let symbol = Self.keysym(for: key.keyCode) ?? key.charactersIgnoringModifiers.unicodeScalars.first.map { $0.value <= 255 ? $0.value : 0x01000000 | $0.value }
             guard let symbol else { unhandled.insert(press); continue }
-            if _markedText != nil, !Self.isModifier(key.keyCode) { unmarkText() }
             keyDown(code: key.keyCode, keysym: symbol)
         }
         if !unhandled.isEmpty { super.pressesBegan(unhandled, with: event) }
@@ -366,7 +370,6 @@ final class RemoteDesktopUIView: UIView {
     override func pressesCancelled(_ presses: Set<UIPress>, with event: UIPressesEvent?) {
         pressesEnded(presses, with: event)
     }
-    private static func isModifier(_ code: UIKeyboardHIDUsage) -> Bool { (224...231).contains(code.rawValue) }
     private static func keysym(for code: UIKeyboardHIDUsage) -> UInt32? {
         switch code {
         case .keyboardLeftControl: return 0xffe3
