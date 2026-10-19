@@ -300,7 +300,7 @@ private struct SessionView: View {
                         dismiss()
                     }
                 }
-                ToolbarItem(placement: .topBarTrailing) {
+                ToolbarItemGroup(placement: .topBarTrailing) {
                     if case .connected = session.state {
                         Button {
                             if keyboardController.isFocused {
