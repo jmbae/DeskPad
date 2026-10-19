@@ -5,7 +5,7 @@ import Foundation
         let model = VNCSessionModel()
         let port = UInt16(CommandLine.arguments[1])!
         let mode = CommandLine.arguments[2]
-        func connect() { model.connect(to: SavedConnection(id: UUID(), name: "Test", host: "127.0.0.1", port: port, username: mode == "apple" ? "alice" : "", lastConnected: nil), password: ["apple", "vnc33"].contains(mode) ? "secret" : nil) }
+        func connect() { model.connect(to: SavedConnection(id: UUID(), name: "Test", host: "127.0.0.1", port: port, username: ["apple", "apple-failure"].contains(mode) ? "alice" : "", lastConnected: nil), password: ["apple", "apple-failure", "vnc33"].contains(mode) ? "secret" : nil) }
         if mode == "deinit" {
             weak var probe: VNCSessionModel?
             do {
@@ -27,9 +27,12 @@ import Foundation
             try await Task.sleep(for: .milliseconds(600))
             precondition(model.state == .connected)
             precondition(model.framebuffer == Data([255, 0, 0, 255]))
-        } else if mode == "first-frame-timeout" {
+        } else if mode == "apple-failure" {
+            guard case .failed(let message) = model.state else { fatalError("Apple rejection waited for a missing reason string: \(model.state)") }
+            precondition(message.contains("인증에 실패"), "Apple rejection was not an authentication error: \(message)")
+        } else if ["first-frame-timeout", "resize-timeout"].contains(mode) {
             try await Task.sleep(for: .seconds(21))
-            guard case .failed = model.state else { fatalError("Bells kept first-frame initialization alive indefinitely") }
+            guard case .failed = model.state else { fatalError("Server messages kept first-frame initialization alive indefinitely") }
         } else if mode == "terminal-error" {
             model.reportError("test failure")
             try await Task.sleep(for: .milliseconds(650))
