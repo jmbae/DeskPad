@@ -218,6 +218,15 @@ final class VNCSessionModel {
 
 }
 
+// Raw frames can be tens of MiB. Budget the whole payload at 1 MiB/s,
+// with fixed latency allowance and a hard cap; incoming chunks never reset it.
+nonisolated enum RFBReceiveBudget {
+    static func rawSeconds(byteCount: Int) -> Int {
+        let mebibyte = 1024 * 1024
+        return 20 + min(100, max(0, byteCount) / mebibyte + (byteCount % mebibyte > 0 ? 1 : 0))
+    }
+}
+
 private actor RFBClient {
     private enum ClientError: LocalizedError {
         case connection(String)
@@ -415,17 +424,17 @@ private actor RFBClient {
         }
     }
 
-    private func armFirstFrameTimeout() {
+    private func armFirstFrameTimeout(seconds: Int = 20) {
         // Empty updates and repeated DesktopSize messages cannot extend this deadline.
         guard firstFrameTimeout == nil else { return }
         firstFrameTimeout = Task { [weak self] in
-            do { try await Task.sleep(for: .seconds(20)) } catch { return }
+            do { try await Task.sleep(for: .seconds(seconds)) } catch { return }
             await self?.expireFirstFrame()
         }
     }
 
     private func expireFirstFrame() {
-        guard !hasFrame else { return }
+        guard !hasFrame, !Task.isCancelled else { return }
         #if DEBUG
         VNCControlDiagnostics.logger.notice("first frame deadline expired")
         #endif
@@ -487,7 +496,7 @@ private actor RFBClient {
         } onCancel: { connection.cancel() }
     }
 
-    private func readExactly(_ count: Int, timeoutEnabled: Bool = true) async throws -> Data {
+    private func readExactly(_ count: Int, timeoutEnabled: Bool = true, receiveTimeout: DispatchTimeInterval = .seconds(20)) async throws -> Data {
         guard count >= 0, count <= 128 * 1024 * 1024 else {
             throw ClientError.invalidServerMessage("요청된 데이터 길이가 허용 범위를 벗어났습니다.")
         }
@@ -495,7 +504,7 @@ private actor RFBClient {
         guard let connection else { throw CancellationError() }
         return try await withTaskCancellationHandler {
             let timeout = DispatchWorkItem { connection.cancel() }
-            if timeoutEnabled { queue.asyncAfter(deadline: .now() + responseTimeout, execute: timeout) }
+            if timeoutEnabled { queue.asyncAfter(deadline: .now() + receiveTimeout, execute: timeout) }
             defer { timeout.cancel() }
             var result = Data()
             result.reserveCapacity(count)
@@ -747,7 +756,16 @@ private actor RFBClient {
                 let rawReadStarted = Date()
                 VNCControlDiagnostics.logger.notice("raw read begin bytes=\(dataLength.partialValue) width=\(rectWidth) height=\(rectHeight)")
                 #endif
-                let raw = try await readExactly(dataLength.partialValue)
+                let receiveSeconds = RFBReceiveBudget.rawSeconds(byteCount: dataLength.partialValue)
+                if !hasFrame, dataLength.partialValue > 0 {
+                    // Only a validated, nonempty Raw payload earns transfer time.
+                    // The next operation must finish this payload before another
+                    // header can be read, so repeated messages cannot renew it.
+                    firstFrameTimeout?.cancel()
+                    firstFrameTimeout = nil
+                    armFirstFrameTimeout(seconds: receiveSeconds)
+                }
+                let raw = try await readExactly(dataLength.partialValue, receiveTimeout: .seconds(receiveSeconds))
                 #if DEBUG
                 let elapsedMilliseconds = Int(Date().timeIntervalSince(rawReadStarted) * 1_000)
                 VNCControlDiagnostics.logger.notice("raw read complete bytes=\(raw.count) elapsed_ms=\(elapsedMilliseconds)")

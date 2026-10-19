@@ -2,6 +2,9 @@ import Foundation
 
 @main struct Harness {
     @MainActor static func main() async throws {
+        precondition(RFBReceiveBudget.rawSeconds(byteCount: 0) == 20)
+        precondition(RFBReceiveBudget.rawSeconds(byteCount: 81_432_576) == 98)
+        precondition(RFBReceiveBudget.rawSeconds(byteCount: 128 * 1024 * 1024) == 120)
         let model = VNCSessionModel()
         let port = UInt16(CommandLine.arguments[1])!
         let mode = CommandLine.arguments[2]
@@ -34,7 +37,10 @@ import Foundation
             return
         }
         connect()
-        if mode == "first-frame" {
+        if mode == "slow-raw" {
+            try await waitUntil("large delayed Raw frame", seconds: 27) { model.state == .connected }
+            precondition(model.framebuffer == Data(Array(repeating: [UInt8(255), 0, 0, 255], count: 1024 * 1024).joined()))
+        } else if mode == "first-frame" {
             try await waitUntil("initialized screen") { model.screenWidth == 1 }
             precondition(model.state == .initializing, "Connected before receiving actual pixels: \(model.state)")
             precondition(model.framebuffer.isEmpty, "Allocated black buffer presented as a frame")

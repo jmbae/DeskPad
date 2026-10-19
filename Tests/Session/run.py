@@ -46,10 +46,17 @@ def serve(listener, mode, marker):
                 assert c.recv(1)==b'' # Apple sends no following reason length or body.
                 return
             c.sendall(b'\0'*4); exact(c,1)
-            c.sendall(struct.pack('>HH',1,1)+b'\0'*16+struct.pack('>I',0))
+            dimensions=(1024,1024) if mode=='slow-raw' else (1,1)
+            c.sendall(struct.pack('>HH',*dimensions)+b'\0'*16+struct.pack('>I',0))
             exact(c,20); count=struct.unpack('>H',exact(c,4)[2:])[0]; exact(c,count*4); exact(c,10)
             stage = 'activity'
-            if mode in ('first-frame','terminal-error'):
+            if mode=='slow-raw':
+                c.sendall(b'\0\0\0\x01'+struct.pack('>HHHHi',0,0,1024,1024,0))
+                # A valid payload may take longer than the small-message deadline.
+                time.sleep(21)
+                c.sendall(b'\0\0\xff\0'*(1024*1024))
+                exact(c,10)
+            elif mode in ('first-frame','terminal-error'):
                 c.sendall(b'\0\0\0\0') # empty update must not count as first frame
                 exact(c,10)
                 deadline=time.monotonic()+5
@@ -75,7 +82,11 @@ def serve(listener, mode, marker):
                     time.sleep(.1)
             elif mode=='first-frame-timeout':
                 for _ in range(430):
-                    c.sendall(b'\x02')
+                    # None of these messages contains a pixel or earns more time.
+                    c.sendall(b'\x02'+b'\0\0\0\0')
+                    exact(c,10)
+                    c.sendall(b'\0\0\0\x01'+struct.pack('>HHHHi',0,0,0,0,0))
+                    exact(c,10)
                     time.sleep(.05)
             elif mode in ('clipboard','apple','apple-failure','vnc33'):
                 c.sendall(b'\0\0\0\x01'+struct.pack('>HHHHi',0,0,1,1,0)+b'\0\0\xff\0')
@@ -101,11 +112,11 @@ def serve(listener, mode, marker):
         if stage != 'activity' or mode not in ('terminal-error','first-frame-timeout','resize-timeout'):
             errors.append(AssertionError(f'{mode}: unexpected disconnect before all protocol assertions completed: {error}'))
     except Exception as error: errors.append(error)
-for mode in ['first-frame','reconnect','malformed','clipboard','apple','apple-failure','vnc33','deinit','terminal-error','resize-release','first-frame-timeout','resize-timeout']:
+for mode in ['slow-raw','first-frame','reconnect','malformed','clipboard','apple','apple-failure','vnc33','deinit','terminal-error','resize-release','first-frame-timeout','resize-timeout']:
     selected = next((arg.split('=', 1)[1] for arg in sys.argv if arg.startswith('--case=')), None)
     if selected and mode != selected: continue
     if '--resize-only' in sys.argv and mode!='resize-timeout': continue
-    if '--quick' in sys.argv and mode in ('first-frame-timeout','resize-timeout'): continue
+    if '--quick' in sys.argv and mode in ('slow-raw','first-frame-timeout','resize-timeout'): continue
     with socket.socket() as listener:
         listener.bind(('127.0.0.1',0)); listener.listen(); listener.settimeout(3)
         marker=binary.parent / f'{mode}-ready'
