@@ -58,12 +58,18 @@ struct ConnectionFormSheet: View {
                         .keyboardType(.numberPad)
                 }
 
-                Section("Authentication") {
-                    TextField("Username (optional)", text: $username)
+                Section {
+                    TextField("Username", text: $username)
                         .autocorrectionDisabled()
                         .textInputAutocapitalization(.never)
+                        .textContentType(.username)
 
-                    SecureField("Password (optional)", text: $password)
+                    SecureField("Password", text: $password)
+                        .textContentType(.password)
+                } header: {
+                    Text("Authentication")
+                } footer: {
+                    Text("Use the Mac account username and password for Screen Sharing. For classic VNC password auth, leave the username empty.")
                 }
             }
             .navigationTitle(isEditing ? "Edit Connection" : "New Connection")

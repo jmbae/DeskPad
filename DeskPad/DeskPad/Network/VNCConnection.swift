@@ -155,11 +155,14 @@ final class VNCConnection {
                 } else if typeValue == UInt32(RFBSecurityType.vncAuthentication.rawValue) {
                     self.state = .authenticating
                     self.receiveVNCAuthChallenge()
-                } else if typeValue == UInt32(RFBSecurityType.plain.rawValue) || typeValue == 30 || typeValue == 33 || typeValue == 35 {
-                    // macOS 등에서 제안하는 다양한 Plain 인증 시도
+                } else if typeValue == UInt32(RFBSecurityType.appleAuthentication.rawValue)
+                            || typeValue == UInt32(RFBSecurityType.appleAuthenticationAlt.rawValue)
+                            || typeValue == UInt32(RFBSecurityType.appleDiffieHellman.rawValue) {
+                    self.receiveAppleAuthentication()
+                } else if typeValue == UInt32(RFBSecurityType.plain.rawValue) {
                     self.sendPlainAuth()
                 } else {
-                    self.state = .failed("Unsupported security type (\(typeValue)). Please enable 'VNC Password' in Mac Sharing settings.")
+                    self.state = .failed("Unsupported security type (\(typeValue)). Enter a Mac username and password, or enable 'VNC Password' in Screen Sharing settings.")
                 }
             } catch {
                 self.state = .failed("Security handshake failed")
@@ -202,24 +205,42 @@ final class VNCConnection {
                     }
                 }
 
-                if types.contains(.vncAuthentication) {
-                    self.sendData(RFBMessageEncoder.encodeSecurityType(.vncAuthentication))
+                let hasUsername = !self.username.isEmpty
+                let hasPassword = !self.password.isEmpty
+
+                guard let selected = RFBSecurityType.preferred(
+                    from: types,
+                    hasUsername: hasUsername,
+                    hasPassword: hasPassword
+                ) else {
+                    if types.contains(where: {
+                        $0 == .appleAuthentication || $0 == .appleAuthenticationAlt || $0 == .appleDiffieHellman
+                    }) {
+                        self.state = .failed("Mac Screen Sharing requires a username and password.")
+                    } else {
+                        let typeList = rawTypes.map { "\($0)" }.joined(separator: ", ")
+                        self.state = .failed("No supported security type (Server offered: \(typeList))")
+                    }
+                    return
+                }
+
+                self.sendData(RFBMessageEncoder.encodeSecurityType(selected))
+
+                switch selected {
+                case .vncAuthentication:
                     self.receiveVNCAuthChallenge()
-                } else if types.contains(.plain) || types.contains(.x509Plain) || types.contains(.x509Vnc) {
-                    // 서버가 Plain(35) 또는 Apple SASL 호환(30, 33) 타입을 제안하면 Plain 인증 시도
-                    let selectedType: RFBSecurityType = types.contains(.plain) ? .plain : (types.contains(.x509Plain) ? .x509Plain : .x509Vnc)
-                    self.sendData(RFBMessageEncoder.encodeSecurityType(selectedType))
+                case .appleAuthentication, .appleAuthenticationAlt, .appleDiffieHellman:
+                    self.receiveAppleAuthentication()
+                case .plain:
                     self.sendPlainAuth()
-                } else if types.contains(.none) {
-                    self.sendData(RFBMessageEncoder.encodeSecurityType(.none))
+                case .none:
                     if self.serverVersion == .rfb38 {
                         self.receiveSecurityResult()
                     } else {
                         self.sendClientInit()
                     }
-                } else {
-                    let typeList = rawTypes.map { "\($0)" }.joined(separator: ", ")
-                    self.state = .failed("No supported security type (Server offered: \(typeList))")
+                default:
+                    self.state = .failed("Unsupported security type (\(selected.rawValue))")
                 }
             }
         }
@@ -227,10 +248,10 @@ final class VNCConnection {
 
     private func sendPlainAuth() {
         state = .authenticating
-        
+
         let userBytes = Array(username.utf8)
         let passBytes = Array(password.utf8)
-        
+
         var data = Data()
         // Username: 4-byte length + content
         let uCount = UInt32(userBytes.count)
@@ -239,7 +260,7 @@ final class VNCConnection {
         data.append(UInt8(uCount >> 8))
         data.append(UInt8(uCount & 0xFF))
         data.append(contentsOf: userBytes)
-        
+
         // Password: 4-byte length + content
         let pCount = UInt32(passBytes.count)
         data.append(UInt8(pCount >> 24))
@@ -247,9 +268,50 @@ final class VNCConnection {
         data.append(UInt8(pCount >> 8))
         data.append(UInt8(pCount & 0xFF))
         data.append(contentsOf: passBytes)
-        
+
         sendData(data)
         receiveSecurityResult()
+    }
+
+    private func receiveAppleAuthentication() {
+        state = .authenticating
+
+        guard !username.isEmpty, !password.isEmpty else {
+            state = .failed("Mac Screen Sharing requires a username and password.")
+            return
+        }
+
+        // generator(2) + keyLength(2)
+        receiveExact(count: 4) { [weak self] header in
+            guard let self else { return }
+            let keyLength = Int(header[header.startIndex + 2]) << 8
+                | Int(header[header.startIndex + 3])
+            guard keyLength > 0, keyLength <= 1024 else {
+                self.state = .failed("Invalid Apple authentication parameters")
+                return
+            }
+
+            self.receiveExact(count: keyLength * 2) { body in
+                var paramsData = Data()
+                paramsData.append(header)
+                paramsData.append(body)
+
+                do {
+                    let parameters = try AppleAuthentication.ServerParameters(data: paramsData)
+                    let response = try AppleAuthentication.buildAuthResponse(
+                        parameters: parameters,
+                        username: self.username,
+                        password: self.password
+                    )
+                    self.sendData(response)
+                    self.receiveSecurityResult()
+                } catch AppleAuthentication.AuthError.missingCredentials {
+                    self.state = .failed("Mac Screen Sharing requires a username and password.")
+                } catch {
+                    self.state = .failed("Apple authentication failed")
+                }
+            }
+        }
     }
 
     private func receiveVNCAuthChallenge() {
@@ -269,7 +331,23 @@ final class VNCConnection {
                 if success {
                     self.sendClientInit()
                 } else {
-                    self.state = .failed("Authentication failed")
+                    // RFB 3.8 may include a reason string after a failed SecurityResult.
+                    self.receiveExact(count: 4) { lengthData in
+                        let length = (try? RFBDataCursor(data: lengthData).readUInt32()) ?? 0
+                        guard length > 0, length < 4096 else {
+                            self.state = .failed("Authentication failed. Check username and password.")
+                            return
+                        }
+                        self.receiveExact(count: Int(length)) { reasonData in
+                            let reason = String(data: reasonData, encoding: .utf8)?
+                                .trimmingCharacters(in: .whitespacesAndNewlines)
+                            if let reason, !reason.isEmpty {
+                                self.state = .failed("Authentication failed: \(reason)")
+                            } else {
+                                self.state = .failed("Authentication failed. Check username and password.")
+                            }
+                        }
+                    }
                 }
             } catch {
                 self.state = .failed("Auth result decode failed")

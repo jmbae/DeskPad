@@ -20,10 +20,41 @@ enum RFBSecurityType: UInt8 {
     case ultra = 17
     case tls = 18
     case venCrypt = 19
-    case x509Vnc = 30
-    case x509Plain = 33
+    /// Apple Remote Desktop / Mac Screen Sharing Diffie-Hellman auth.
+    case appleAuthentication = 30
+    case appleAuthenticationAlt = 33
     case plain = 35
-    case x509None = 36
+    case appleDiffieHellman = 36
+
+    /// Pick the best auth method for the credentials the user provided.
+    static func preferred(
+        from types: [RFBSecurityType],
+        hasUsername: Bool,
+        hasPassword: Bool
+    ) -> RFBSecurityType? {
+        let available = Set(types)
+
+        if hasUsername && hasPassword {
+            if available.contains(.appleAuthentication) { return .appleAuthentication }
+            if available.contains(.appleAuthenticationAlt) { return .appleAuthenticationAlt }
+            if available.contains(.appleDiffieHellman) { return .appleDiffieHellman }
+            if available.contains(.vncAuthentication) { return .vncAuthentication }
+            if available.contains(.plain) { return .plain }
+            if available.contains(.none) { return .none }
+            return nil
+        }
+
+        if hasPassword {
+            if available.contains(.vncAuthentication) { return .vncAuthentication }
+            if available.contains(.plain) { return .plain }
+            if available.contains(.none) { return .none }
+            return nil
+        }
+
+        if available.contains(.none) { return .none }
+        if available.contains(.vncAuthentication) { return .vncAuthentication }
+        return nil
+    }
 }
 
 // MARK: - Client Message Types
