@@ -1,79 +1,57 @@
 # DeskPad
 
-DeskPad is an open-source VNC client for iPadOS, built with SwiftUI.
-It implements core parts of the RFB protocol to connect to remote desktops and interact with them using touch, pointer, and hardware keyboard input.
-
-## App Icon
+DeskPad is a native VNC client for iPhone and iPad, built with SwiftUI. It lets you save VNC server connections, connect to a remote desktop, and interact with it using touch or a keyboard.
 
 <p align="left">
-	<img src="AppIcon.png" alt="DeskPad App Icon" width="120" />
-</p>
-
-## Screenshots
-
-<p align="left">
-	<img src="ScreenShot_003.png" alt="DeskPad Screenshot 3" width="640" />
+  <img src="AppIcon.png" alt="DeskPad app icon" width="120" />
 </p>
 
 ## Features
-- VNC connection flow with RFB handshaking and session setup
-- Password-based VNC authentication (including DES challenge response)
-- Saved connections with thumbnail previews for quick reconnection
-- Framebuffer rendering for remote desktop updates
-- Remote input forwarding:
-	- Keyboard key down/up events
-	- Pointer move/click events
-	- Scroll input handling
-- Zoom and pan support in the remote desktop view
-- SwiftUI app structure with a UIKit-backed rendering/input view for desktop interaction
 
-## Tech Stack
-- Swift
-- SwiftUI + UIKit interoperability
-- Network.framework
-- CoreGraphics
-- CommonCrypto
+- Add, edit, and delete saved VNC connections, with a configurable server name, host, port, and optional username
+- Store connection details in the app and passwords in the iOS Keychain
+- Connect to VNC servers using RFB 3.3–3.8 negotiation
+- Support None, standard VNC password, and Apple Diffie–Hellman authentication security types
+- Render Raw, CopyRect, and DesktopSize framebuffer updates
+- Send pointer movement, clicks, and drags from the remote desktop view
+- Send text and common special-key input using the software or hardware keyboard
+- Show connection progress and failures, with an option to retry
 
-## Project Structure
-- `DeskPad/Models`: Data models for connections, pixel formats, and RFB types
-- `DeskPad/Network`: VNC connection lifecycle and socket communication
-- `DeskPad/Protocol`: RFB message encoder/decoder and authentication helpers
-- `DeskPad/Framebuffer`: Pixel buffer and image generation for rendering
-- `DeskPad/Input`: Key symbol mapping and input event forwarding
-- `DeskPad/Views`: Connection UI, remote desktop view, and session toolbar
+## Security and limitations
+
+DeskPad does not provide TLS encryption. Authentication does not encrypt the ongoing VNC session: remote screen contents and input are transmitted without transport encryption. Standard VNC password authentication also uses weak DES-based challenge-response. Use DeskPad only on a trusted private network or through a VPN, and do not expose a VNC server directly to the public internet.
+
+The current client supports only the listed authentication types and framebuffer encodings. Advanced gestures such as zooming, panning, scrolling, and secondary-click input, as well as clipboard synchronization and TLS, are not currently supported.
 
 ## Requirements
-- Xcode 26 or later
-- iPadOS 26.0 or later
-- This app requires a hardware keyboard and a pointing device, including the iPad Magic Keyboard.
 
-## Getting Started
-1. Clone the repository.
-2. Open `DeskPad/DeskPad.xcodeproj` in Xcode.
-3. Select an iPad simulator or a physical iPad device.
-4. Build and run the `DeskPad` target.
+- Xcode 27 or later
+- iOS/iPadOS 27.0 or later
+- iPhone or iPad
 
-## Usage
-1. Launch the app.
-2. Enter the VNC server host, port, and credentials (if required).
-3. Connect and start interacting with the remote desktop.
+## Getting started
 
-## Security Note
-- Use DeskPad only on trusted networks or through secure tunnels/VPN when accessing remote systems.
-- Avoid exposing VNC servers directly to the public internet.
+1. Clone this repository.
+2. Open `DeskPad.xcodeproj` in Xcode.
+3. Select an iPhone or iPad simulator, or a connected device.
+4. Build and run the `DeskPad` app.
+5. Add a VNC server connection. The default port is `5900`.
 
-## Roadmap
-- Additional RFB encoding support
-- Better reconnection and session resilience
-- Improved keyboard/layout coverage
-- UI/UX improvements for multitasking workflows on iPad
+## Project structure
+
+- `DeskPad/ContentView.swift`: connection list, connection editor, and remote desktop UI
+- `DeskPad/ConnectionStore.swift`: saved connection metadata and Keychain credentials
+- `DeskPad/VNCSession.swift`: TCP transport, RFB negotiation and messages, authentication, framebuffer updates, and remote input
+- `DeskPad/Assets.xcassets`: app icon and accent color
 
 ## Contributing
-Issues and pull requests are welcome.
-If you plan a larger change, please open an issue first to discuss scope and implementation direction.
+
+Issues and pull requests are welcome. For larger changes, please open an issue first to discuss scope and implementation.
 
 ## Credits
+
 - [Ned Park](https://africastart.com)
 
 ## License
+
 Licensed under the [MIT](LICENSE) license.
