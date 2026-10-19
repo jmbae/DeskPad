@@ -314,6 +314,8 @@ private actor RFBClient {
         if negotiatedMinor >= 8 || selectedSecurityType == 2 || selectedSecurityType == 30 {
             let securityResult = try await readUInt32()
             guard securityResult == 0 else {
+                // Apple Screen Sharing type 30 omits the RFB 3.8 reason string.
+                if selectedSecurityType == 30 { throw ClientError.authenticationFailed }
                 if negotiatedMinor >= 8 {
                     let reasonLength = try await readUInt32()
                     guard reasonLength <= 4096 else {
@@ -356,7 +358,8 @@ private actor RFBClient {
     }
 
     private func armFirstFrameTimeout() {
-        firstFrameTimeout?.cancel()
+        // Empty updates and repeated DesktopSize messages cannot extend this deadline.
+        guard firstFrameTimeout == nil else { return }
         firstFrameTimeout = Task { [weak self] in
             do { try await Task.sleep(for: .seconds(20)) } catch { return }
             await self?.expireFirstFrame()
