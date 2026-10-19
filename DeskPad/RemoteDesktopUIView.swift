@@ -276,6 +276,7 @@ final class RemoteDesktopUIView: UIView {
     @objc private func handleTap(_ recognizer: UITapGestureRecognizer) {
         #if DEBUG
         recordInputCallback("tap")
+        VNCControlDiagnostics.logger.notice("ui layout width=\(self.bounds.width) height=\(self.bounds.height) desktop_width=\(self.desktopSize.width) desktop_height=\(self.desktopSize.height)")
         #endif
         guard recognizer.state == .ended else { return }
         let viewPoint = recognizer.location(in: self)
@@ -375,6 +376,11 @@ final class RemoteDesktopUIView: UIView {
         #endif
         var unhandled = Set<UIPress>()
         for press in presses {
+            #if DEBUG
+            if let key = press.key {
+                VNCControlDiagnostics.logger.notice("ui hardware modifiers=\(key.modifierFlags.rawValue)")
+            }
+            #endif
             guard let key = press.key, handlesDirectly(code: key.keyCode, modifiers: key.modifierFlags) else {
                 unhandled.insert(press); continue
             }
