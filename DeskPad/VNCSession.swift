@@ -103,8 +103,9 @@ final class VNCSessionModel {
         errorDetails = message
     }
 
-    private func enqueueInput(_ operation: @escaping @Sendable (RFBClient) async throws -> Void) {
-        guard case .connected = state, let client else { return }
+    private func enqueueInput(allowReleaseWhenInitializing: Bool = false, _ operation: @escaping @Sendable (RFBClient) async throws -> Void) {
+        let canRelease = allowReleaseWhenInitializing && state == .initializing && screenWidth > 0 && screenHeight > 0
+        guard state == .connected || canRelease, let client else { return }
         let generation = self.generation
         let previous = inputTask
         inputTask = Task { [weak self] in
@@ -116,16 +117,15 @@ final class VNCSessionModel {
     }
 
     func sendPointer(x: Int, y: Int, buttonMask: UInt8) {
-        guard case .connected = state else { return }
         let boundedX = min(max(x, 0), max(screenWidth - 1, 0))
         let boundedY = min(max(y, 0), max(screenHeight - 1, 0))
-        enqueueInput { client in
+        enqueueInput(allowReleaseWhenInitializing: buttonMask == 0) { client in
             try await client.sendPointer(x: UInt16(boundedX), y: UInt16(boundedY), buttonMask: buttonMask)
         }
     }
 
     func sendKey(keysym: UInt32, pressed: Bool) {
-        enqueueInput { client in try await client.sendKey(keysym: keysym, pressed: pressed) }
+        enqueueInput(allowReleaseWhenInitializing: !pressed) { client in try await client.sendKey(keysym: keysym, pressed: pressed) }
     }
 
     func sendClipboard(text: String) {

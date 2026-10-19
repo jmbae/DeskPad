@@ -12,12 +12,12 @@ def exact(c,n):
         out+=part
     return out
 errors=[]
-def serve(listener, mode):
+def serve(listener, mode, marker):
     stage = 'setup'
     try:
         c,_=listener.accept()
         with c:
-            c.settimeout(3)
+            c.settimeout(7)
             if mode=='deinit':
                 assert c.recv(1)==b''
                 return
@@ -43,7 +43,7 @@ def serve(listener, mode):
                 c.sendall(b'\x01\x01'); exact(c,1)
             if mode=='apple-failure':
                 c.sendall(struct.pack('>I',1))
-                time.sleep(1) # Apple sends no following reason length or body.
+                assert c.recv(1)==b'' # Apple sends no following reason length or body.
                 return
             c.sendall(b'\0'*4); exact(c,1)
             c.sendall(struct.pack('>HH',1,1)+b'\0'*16+struct.pack('>I',0))
@@ -51,8 +51,23 @@ def serve(listener, mode):
             stage = 'activity'
             if mode in ('first-frame','terminal-error'):
                 c.sendall(b'\0\0\0\0') # empty update must not count as first frame
-                exact(c,10); time.sleep(.55)
+                exact(c,10)
+                deadline=time.monotonic()+5
+                while not marker.exists():
+                    assert time.monotonic()<deadline, f'{mode}: no client readiness signal'
+                    time.sleep(.01)
                 c.sendall(b'\0\0\0\x01'+struct.pack('>HHHHi',0,0,1,1,0)+b'\0\0\xff\0')
+            elif mode=='resize-release':
+                c.sendall(b'\0\0\0\x01'+struct.pack('>HHHHi',0,0,1,1,0)+b'\0\0\xff\0')
+                exact(c,10)
+                assert exact(c,8)==b'\x04\x01\0\0\0\0\xff\xe3'
+                assert exact(c,6)==b'\x05\x01\0\0\0\0'
+                c.sendall(b'\0\0\0\x01'+struct.pack('>HHHHi',0,0,2,2,-223))
+                assert exact(c,10)==b'\x03\0\0\0\0\0\0\x02\0\x02'
+                assert exact(c,8)==b'\x04\0\0\0\0\0\xff\xe3'
+                assert exact(c,6)==b'\x05\0\0\0\0\0'
+                c.sendall(b'\0\0\0\x01'+struct.pack('>HHHHi',0,0,2,2,0)+b'\0\0\xff\0'*4)
+                exact(c,10)
             elif mode=='resize-timeout':
                 for _ in range(220):
                     c.sendall(b'\0\0\0\x01'+struct.pack('>HHHHi',0,0,1,1,-223))
@@ -72,23 +87,30 @@ def serve(listener, mode):
                     for _ in range(50):
                         assert exact(c,8)==b'\x04\x01\0\0\0\0\0A'
                         assert exact(c,8)==b'\x04\0\0\0\0\0\0A'
+                    c.sendall(b'\x03\0\0\0'+struct.pack('>I',14)+b'input-complete')
             elif mode=='malformed':
                 c.sendall(b'\0\0\0\x01'+struct.pack('>HHHHi',1,0,1,1,0))
-            time.sleep(.35)
+            if mode not in ('first-frame-timeout','resize-timeout'):
+                while c.recv(1024): pass
         if mode=='reconnect':
             c,_=listener.accept()
-            with c: time.sleep(1)
+            with c:
+                c.settimeout(7)
+                assert c.recv(1)==b''
     except (EOFError, BrokenPipeError, ConnectionResetError) as error:
         if stage != 'activity' or mode not in ('terminal-error','first-frame-timeout','resize-timeout'):
             errors.append(AssertionError(f'{mode}: unexpected disconnect before all protocol assertions completed: {error}'))
     except Exception as error: errors.append(error)
-for mode in ['first-frame','reconnect','malformed','clipboard','apple','apple-failure','vnc33','deinit','terminal-error','first-frame-timeout','resize-timeout']:
+for mode in ['first-frame','reconnect','malformed','clipboard','apple','apple-failure','vnc33','deinit','terminal-error','resize-release','first-frame-timeout','resize-timeout']:
+    selected = next((arg.split('=', 1)[1] for arg in sys.argv if arg.startswith('--case=')), None)
+    if selected and mode != selected: continue
     if '--resize-only' in sys.argv and mode!='resize-timeout': continue
     if '--quick' in sys.argv and mode in ('first-frame-timeout','resize-timeout'): continue
     with socket.socket() as listener:
         listener.bind(('127.0.0.1',0)); listener.listen(); listener.settimeout(3)
-        thread=threading.Thread(target=serve,args=(listener,mode),daemon=True); thread.start()
-        subprocess.run([str(binary),str(listener.getsockname()[1]),mode],check=True,timeout=30)
+        marker=binary.parent / f'{mode}-ready'
+        thread=threading.Thread(target=serve,args=(listener,mode,marker),daemon=True); thread.start()
+        subprocess.run([str(binary),str(listener.getsockname()[1]),mode,str(marker)],check=True,timeout=30)
         thread.join(timeout=3)
         assert not thread.is_alive(), f"{mode}: fake server did not finish protocol assertions"
         if errors: raise errors[0]
