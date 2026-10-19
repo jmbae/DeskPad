@@ -27,6 +27,15 @@ final class RemoteInputTests: XCTestCase {
         view.deleteBackward()
         XCTAssertEqual(keys, [0xff08])
     }
+    func testShortcutCommitsCompositionBeforePressingControl() {
+        let view = RemoteDesktopUIView()
+        var events: [String] = []
+        view.onKey = { events.append("\($0):\($1)") }
+        view.setMarkedText("한", selectedRange: NSRange(location: 1, length: 0))
+        view.keyDown(code: .keyboardLeftControl, keysym: 0xffe3)
+        XCTAssertEqual(events, ["16831836:true", "16831836:false", "65507:true"])
+        XCTAssertNil(view.markedTextRange)
+    }
     func testViewportMappingClampsAndResetRestoresFit() {
         let view = RemoteDesktopUIView(frame: CGRect(x: 0, y: 0, width: 200, height: 200))
         view.desktopSize = CGSize(width: 400, height: 200)
