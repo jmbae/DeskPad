@@ -219,11 +219,13 @@ final class RemoteDesktopUIView: UIView {
 
         // Single tap = left click
         let tap = UITapGestureRecognizer(target: self, action: #selector(handleTap))
+        tap.buttonMaskRequired = .primary
         addGestureRecognizer(tap)
 
         // Two-finger tap = right click
         let rightClick = UITapGestureRecognizer(target: self, action: #selector(handleRightClick))
         rightClick.numberOfTouchesRequired = 2
+        rightClick.allowedTouchTypes = [NSNumber(value: UITouch.TouchType.direct.rawValue)]
         addGestureRecognizer(rightClick)
 
         // Pinch to zoom
@@ -249,6 +251,9 @@ final class RemoteDesktopUIView: UIView {
         addGestureRecognizer(viewportPan)
         let secondary = UITapGestureRecognizer(target: self, action: #selector(handleRightClick))
         secondary.buttonMaskRequired = .secondary
+        // Button masks do not exclude direct touches: without this restriction,
+        // an ordinary screen tap can win this recognizer and become a right click.
+        secondary.allowedTouchTypes = [NSNumber(value: UITouch.TouchType.indirectPointer.rawValue)]
         addGestureRecognizer(secondary)
 
         // Single finger drag for pointer movement (touch)

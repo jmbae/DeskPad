@@ -3,6 +3,25 @@ import XCTest
 
 @MainActor
 final class RemoteInputTests: XCTestCase {
+    func testSecondaryMouseClickCannotRecognizeDirectTouch() throws {
+        let taps = RemoteDesktopUIView().gestureRecognizers?.compactMap { $0 as? UITapGestureRecognizer } ?? []
+        let secondary = try XCTUnwrap(taps.first { $0.buttonMaskRequired == .secondary })
+        XCTAssertEqual(secondary.allowedTouchTypes, [NSNumber(value: UITouch.TouchType.indirectPointer.rawValue)])
+    }
+
+    func testSingleTapRequiresPrimaryMouseButton() throws {
+        let taps = RemoteDesktopUIView().gestureRecognizers?.compactMap { $0 as? UITapGestureRecognizer } ?? []
+        let primary = try XCTUnwrap(taps.first { $0.numberOfTouchesRequired == 1 && $0.buttonMaskRequired != .secondary })
+        XCTAssertEqual(primary.buttonMaskRequired, .primary)
+        XCTAssertTrue(primary.allowedTouchTypes.contains(NSNumber(value: UITouch.TouchType.direct.rawValue)))
+    }
+
+    func testTwoFingerRightClickRemainsDirectTouchOnly() throws {
+        let taps = RemoteDesktopUIView().gestureRecognizers?.compactMap { $0 as? UITapGestureRecognizer } ?? []
+        let twoFinger = try XCTUnwrap(taps.first { $0.numberOfTouchesRequired == 2 })
+        XCTAssertEqual(twoFinger.allowedTouchTypes, [NSNumber(value: UITouch.TouchType.direct.rawValue)])
+    }
+
     func testCompositionDoesNotSendUntilCommitAndEmitsEveryScalar() {
         let view = RemoteDesktopUIView()
         var keys: [UInt32] = []
