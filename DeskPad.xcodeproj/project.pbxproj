@@ -6,19 +6,52 @@
 	objectVersion = 110;
 	objects = {
 
+/* Begin PBXBuildFile section */
+		D8EEDFB0C96E8EB68B063766 /* Foundation.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 74671CB33B7A2A8E4A4F882D /* Foundation.framework */; };
+/* End PBXBuildFile section */
+
+/* Begin PBXContainerItemProxy section */
+		CF7EA14DE30CD720BDF0AB1E /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = A6C30E5430860BB300C2075C /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = A6C30E5B30860BB300C2075C;
+			remoteInfo = DeskPad;
+		};
+/* End PBXContainerItemProxy section */
+
 /* Begin PBXFileReference section */
+		3802F2BF6AD308C3E41C3367 /* DeskPadTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = DeskPadTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
+		74671CB33B7A2A8E4A4F882D /* Foundation.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = Foundation.framework; path = Platforms/iPhoneOS.platform/Developer/SDKs/iPhoneOS18.0.sdk/System/Library/Frameworks/Foundation.framework; sourceTree = DEVELOPER_DIR; };
 		A6C30E5C30860BB300C2075C /* DeskPad.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = DeskPad.app; sourceTree = BUILT_PRODUCTS_DIR; };
 /* End PBXFileReference section */
 
 /* Begin PBXFileSystemSynchronizedRootGroup section */
+		498C46BFB1193686FD45B6CA /* DeskPadTests */ = {
+			isa = PBXFileSystemSynchronizedRootGroup;
+			exceptions = (
+			);
+			path = DeskPadTests;
+			sourceTree = "<group>";
+		};
 		A6C30E5E30860BB300C2075C /* DeskPad */ = {
 			isa = PBXFileSystemSynchronizedRootGroup;
+			exceptions = (
+			);
 			path = DeskPad;
 			sourceTree = "<group>";
 		};
 /* End PBXFileSystemSynchronizedRootGroup section */
 
 /* Begin PBXFrameworksBuildPhase section */
+		15D52666E50B48E39DE3F185 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				D8EEDFB0C96E8EB68B063766 /* Foundation.framework in Frameworks */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 		A6C30E5930860BB300C2075C /* Frameworks */ = {
 			isa = PBXFrameworksBuildPhase;
 			files = (
@@ -27,11 +60,21 @@
 /* End PBXFrameworksBuildPhase section */
 
 /* Begin PBXGroup section */
+		361A532EB12EEE397247FDCA /* iOS */ = {
+			isa = PBXGroup;
+			children = (
+				74671CB33B7A2A8E4A4F882D /* Foundation.framework */,
+			);
+			name = iOS;
+			sourceTree = "<group>";
+		};
 		A6C30E5330860BB300C2075C = {
 			isa = PBXGroup;
 			children = (
 				A6C30E5E30860BB300C2075C /* DeskPad */,
 				A6C30E5D30860BB300C2075C /* Products */,
+				BE9B3742F8E88F92DC8EDECA /* Frameworks */,
+				498C46BFB1193686FD45B6CA /* DeskPadTests */,
 			);
 			sourceTree = "<group>";
 		};
@@ -39,13 +82,43 @@
 			isa = PBXGroup;
 			children = (
 				A6C30E5C30860BB300C2075C /* DeskPad.app */,
+				3802F2BF6AD308C3E41C3367 /* DeskPadTests.xctest */,
 			);
 			name = Products;
+			sourceTree = "<group>";
+		};
+		BE9B3742F8E88F92DC8EDECA /* Frameworks */ = {
+			isa = PBXGroup;
+			children = (
+				361A532EB12EEE397247FDCA /* iOS */,
+			);
+			name = Frameworks;
 			sourceTree = "<group>";
 		};
 /* End PBXGroup section */
 
 /* Begin PBXNativeTarget section */
+		536336191C517507F66AC8BC /* DeskPadTests */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = 8ED7567CE6A5B9CB38B595F9 /* Build configuration list for PBXNativeTarget "DeskPadTests" */;
+			buildPhases = (
+				43EADE4A38EB8B3F0704E614 /* Sources */,
+				15D52666E50B48E39DE3F185 /* Frameworks */,
+				58D0BCE35953256561916A1F /* Resources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+				1981B535D6FA132D3BF9C0BB /* PBXTargetDependency */,
+			);
+			fileSystemSynchronizedGroups = (
+				498C46BFB1193686FD45B6CA /* DeskPadTests */,
+			);
+			name = DeskPadTests;
+			productName = DeskPadTests;
+			productReference = 3802F2BF6AD308C3E41C3367 /* DeskPadTests.xctest */;
+			productType = "com.apple.product-type.bundle.unit-test";
+		};
 		A6C30E5B30860BB300C2075C /* DeskPad */ = {
 			isa = PBXNativeTarget;
 			buildConfigurationList = A6C30E6930860BB400C2075C /* Build configuration list for PBXNativeTarget "DeskPad" */;
@@ -55,6 +128,8 @@
 				A6C30E5A30860BB300C2075C /* Resources */,
 			);
 			buildRules = (
+			);
+			dependencies = (
 			);
 			fileSystemSynchronizedGroups = (
 				A6C30E5E30860BB300C2075C /* DeskPad */,
@@ -94,11 +169,19 @@
 			projectRoot = "";
 			targets = (
 				A6C30E5B30860BB300C2075C /* DeskPad */,
+				536336191C517507F66AC8BC /* DeskPadTests */,
 			);
 		};
 /* End PBXProject section */
 
 /* Begin PBXResourcesBuildPhase section */
+		58D0BCE35953256561916A1F /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 		A6C30E5A30860BB300C2075C /* Resources */ = {
 			isa = PBXResourcesBuildPhase;
 			files = (
@@ -107,6 +190,13 @@
 /* End PBXResourcesBuildPhase section */
 
 /* Begin PBXSourcesBuildPhase section */
+		43EADE4A38EB8B3F0704E614 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 		A6C30E5830860BB300C2075C /* Sources */ = {
 			isa = PBXSourcesBuildPhase;
 			files = (
@@ -114,8 +204,35 @@
 		};
 /* End PBXSourcesBuildPhase section */
 
+/* Begin PBXTargetDependency section */
+		1981B535D6FA132D3BF9C0BB /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			name = DeskPad;
+			target = A6C30E5B30860BB300C2075C /* DeskPad */;
+			targetProxy = CF7EA14DE30CD720BDF0AB1E /* PBXContainerItemProxy */;
+		};
+/* End PBXTargetDependency section */
+
 /* Begin XCBuildConfiguration section */
-		A6C30E6730860BB400C2075C /* Debug configuration for PBXProject "DeskPad" */ = {
+		8D706735B3C6C34DDFA143C7 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				BUNDLE_LOADER = "$(TEST_HOST)";
+				CLANG_ENABLE_OBJC_WEAK = NO;
+				CODE_SIGN_STYLE = Automatic;
+				GENERATE_INFOPLIST_FILE = YES;
+				IPHONEOS_DEPLOYMENT_TARGET = 27.0;
+				PRODUCT_BUNDLE_IDENTIFIER = com.africastart.DeskPadTests;
+				SDKROOT = iphoneos;
+				SWIFT_DEFAULT_ACTOR_ISOLATION = MainActor;
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
+				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/DeskPad.app/$(BUNDLE_EXECUTABLE_FOLDER_PATH)/DeskPad";
+				VALIDATE_PRODUCT = YES;
+			};
+			name = Release;
+		};
+		A6C30E6730860BB400C2075C /* Debug */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
 				ALWAYS_SEARCH_USER_PATHS = NO;
@@ -179,7 +296,7 @@
 			};
 			name = Debug;
 		};
-		A6C30E6830860BB400C2075C /* Release configuration for PBXProject "DeskPad" */ = {
+		A6C30E6830860BB400C2075C /* Release */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
 				ALWAYS_SEARCH_USER_PATHS = NO;
@@ -236,7 +353,7 @@
 			};
 			name = Release;
 		};
-		A6C30E6A30860BB400C2075C /* Debug configuration for PBXNativeTarget "DeskPad" */ = {
+		A6C30E6A30860BB400C2075C /* Debug */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
@@ -268,7 +385,7 @@
 			};
 			name = Debug;
 		};
-		A6C30E6B30860BB400C2075C /* Release configuration for PBXNativeTarget "DeskPad" */ = {
+		A6C30E6B30860BB400C2075C /* Release */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
@@ -300,27 +417,52 @@
 			};
 			name = Release;
 		};
+		CFC1F7D70DB5F148CF12227E /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				BUNDLE_LOADER = "$(TEST_HOST)";
+				CLANG_ENABLE_OBJC_WEAK = NO;
+				CODE_SIGN_STYLE = Automatic;
+				GENERATE_INFOPLIST_FILE = YES;
+				IPHONEOS_DEPLOYMENT_TARGET = 27.0;
+				PRODUCT_BUNDLE_IDENTIFIER = com.africastart.DeskPadTests;
+				SDKROOT = iphoneos;
+				SWIFT_DEFAULT_ACTOR_ISOLATION = MainActor;
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
+				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/DeskPad.app/$(BUNDLE_EXECUTABLE_FOLDER_PATH)/DeskPad";
+			};
+			name = Debug;
+		};
 /* End XCBuildConfiguration section */
 
 /* Begin XCConfigurationList section */
+		8ED7567CE6A5B9CB38B595F9 /* Build configuration list for PBXNativeTarget "DeskPadTests" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				8D706735B3C6C34DDFA143C7 /* Release */,
+				CFC1F7D70DB5F148CF12227E /* Debug */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
 		A6C30E5730860BB300C2075C /* Build configuration list for PBXProject "DeskPad" */ = {
 			isa = XCConfigurationList;
 			buildConfigurations = (
-				A6C30E6730860BB400C2075C /* Debug configuration for PBXProject "DeskPad" */,
-				A6C30E6830860BB400C2075C /* Release configuration for PBXProject "DeskPad" */,
+				A6C30E6730860BB400C2075C /* Debug */,
+				A6C30E6830860BB400C2075C /* Release */,
 			);
 			defaultConfigurationName = Release;
 		};
 		A6C30E6930860BB400C2075C /* Build configuration list for PBXNativeTarget "DeskPad" */ = {
 			isa = XCConfigurationList;
 			buildConfigurations = (
-				A6C30E6A30860BB400C2075C /* Debug configuration for PBXNativeTarget "DeskPad" */,
-				A6C30E6B30860BB400C2075C /* Release configuration for PBXNativeTarget "DeskPad" */,
+				A6C30E6A30860BB400C2075C /* Debug */,
+				A6C30E6B30860BB400C2075C /* Release */,
 			);
 			defaultConfigurationName = Release;
 		};
 /* End XCConfigurationList section */
 	};
 	rootObject = A6C30E5430860BB300C2075C /* Project object */;
-	validationLevel = 1;
 }
