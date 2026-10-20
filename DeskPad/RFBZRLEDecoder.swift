@@ -3,19 +3,18 @@ import zlib
 
 // Quality changes are negotiated only when opening a new connection.
 nonisolated enum VNCColorQuality: String, CaseIterable, Sendable {
-    case fullColor, balanced, lowLatency
+    case fullColor, lowLatency
 
     var pixelFormat: RFBPixelFormat {
         switch self {
         case .fullColor: .rgb888
-        case .balanced: .rgb565
-        case .lowLatency: .rgb332Padded
+        case .lowLatency: .rgb565
         }
     }
 }
 
-// The true-color formats supported by this client. Low-latency RGB332 uses
-// a 32-bit container for servers that reject eight-bit pixel words. Pixel words are
+// The codec also covers RGB332 variants, but the quality API only selects
+// formats verified with the target Mac: RGB888 and RGB565. Pixel words are
 // little endian; channel maxima in SetPixelFormat are always network endian.
 nonisolated enum RFBPixelFormat: String, Sendable {
     case rgb888, rgb565, rgb332, rgb332Padded
