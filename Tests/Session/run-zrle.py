@@ -57,6 +57,32 @@ add('expired-decode-budget',1,1,b'\1'+red,reject=True,expired=True)
 add('oversized-compressed-for-tiny-tile',1,1,b'',compressed=b'\0'*70_000,reject=True)
 add('mid-decode-deadline',4096,4096,(b'\1'+red)*(64*64),reject=True)
 cases[-1]['budgetMilliseconds']=1
+# The same tile grammar uses 2-byte RGB565 or 1-byte RGB332 CPIXELs.
+for fmt,byte_count,shifts,maxima,mid in [('rgb565',2,[11,5,0],[31,63,31],0x8c65),('rgb332',1,[5,2,0],[7,7,3],0x91),('rgb332Padded',3,[5,2,0],[7,7,3],0x91)]:
+    def pixel(value): return value.to_bytes(byte_count,'little')
+    def expected(values):
+        return b''.join(bytes([((value>>shift & maximum)*255+maximum//2)//maximum for shift,maximum in zip(shifts,maxima)]+[255]) for value in values)
+    def add_color(name,w,h,tile,values=None,reject=False):
+        add(fmt+'-'+name,w,h,tile,reject=reject)
+        cases[-1]['pixelFormat']=fmt
+        if values is not None: cases[-1]['rectangles'][0]['rgba']=b64(expected(values))
+    top=(1<<(byte_count*8))-1
+    values=[0,top,mid,maxima[0]<<shifts[0],maxima[1]<<shifts[1],maxima[2]]
+    add_color('raw',6,1,b'\0'+b''.join(map(pixel,values)),values)
+    add_color('solid',3,2,b'\1'+pixel(mid),[mid]*6)
+    add_color('packed-padding',5,2,b'\2'+pixel(mid)+pixel(top)+b'\x50\xa8',[mid,top,mid,top,mid,top,mid,top,mid,top])
+    add_color('plain-rle',64,5,b'\x80'+pixel(mid)+b'\xff\x3f'+pixel(top)+b'\0',[mid]*319+[top])
+    add_color('palette-rle',4,2,b'\x82'+pixel(mid)+pixel(top)+b'\0\x81\6',[mid]+[top]*7)
+    tile_colors=[mid,top,0,values[3]]
+    add_color('edge-tiles',65,65,b''.join(b'\1'+pixel(color) for color in tile_colors),[tile_colors[(y//64)*2+x//64] for y in range(65) for x in range(65)])
+    add_color('truncated-cpixel',1,1,b'\0'+pixel(mid)[:-1],reject=True)
+    add_color('invalid-palette',1,1,b'\3'+pixel(mid)*3+b'\xc0',reject=True)
+    add_color('run-overrun',1,1,b'\x80'+pixel(mid)+b'\xff',reject=True)
+    compressor=zlib.compressobj(); rects=[]
+    for value in (mid,top):
+        payload=compressor.compress(b'\0'+pixel(value)*2)+compressor.flush(zlib.Z_SYNC_FLUSH)
+        rects.append(dict(width=2,height=1,compressed=b64(payload),rgba=b64(expected([value]*2))))
+    cases.append(dict(name=fmt+'-persistent-stream',pixelFormat=fmt,rectangles=rects,reject=False,expired=False))
 w,h=6016,3384
 add('6K-solid-frame',w,h,(b'\1'+red)*(((w+63)//64)*((h+63)//64)),solid=[red[2],red[1],red[0]])
 # An incompressible frame exercises every raw tile and verifies placement via

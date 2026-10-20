@@ -18,7 +18,7 @@ import Foundation
             }
         }
         func signalServer() throws { try Data().write(to: marker) }
-        func connect() { model.connect(to: SavedConnection(id: UUID(), name: "Test", host: "127.0.0.1", port: port, username: ["apple", "apple-failure"].contains(mode) ? "alice" : "", lastConnected: nil), password: ["apple", "apple-failure", "vnc33"].contains(mode) ? "secret" : nil) }
+        func connect() { model.connect(to: SavedConnection(id: UUID(), name: "Test", host: "127.0.0.1", port: port, username: ["apple", "apple-failure"].contains(mode) ? "alice" : "", lastConnected: nil), password: ["apple", "apple-failure", "vnc33"].contains(mode) ? "secret" : nil, colorQuality: mode == "rgb565" ? .lowLatency : .fullColor) }
         if mode == "deinit" {
             weak var probe: VNCSessionModel?
             do {
@@ -37,7 +37,13 @@ import Foundation
             return
         }
         connect()
-        if mode == "zrle" {
+        if mode == "rgb565" {
+            try await waitUntil("reduced-color frame") { model.state == .connected }
+            let expected: [UInt8] = [140, 142, 41, 255]
+            precondition(model.framebuffer == Data(expected))
+            try signalServer()
+            try await waitUntil("reduced-color Raw fallback") { model.framebuffer == Data([255,255,255,255]) }
+        } else if mode == "zrle" {
             try await waitUntil("ZRLE first pixels") { model.state == .connected }
             precondition(model.framebuffer == Data([0x56, 0x34, 0x12, 255]))
             try signalServer()

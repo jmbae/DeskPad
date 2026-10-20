@@ -15,13 +15,15 @@ private struct Case: Decodable {
     let reject: Bool
     let expired: Bool
     let budgetMilliseconds: Int?
+    let pixelFormat: String?
 }
 
 @main struct ZRLEHarness {
     static func main() throws {
         let cases = try JSONDecoder().decode([Case].self, from: Data(contentsOf: URL(fileURLWithPath: CommandLine.arguments[1])))
         for test in cases {
-            let decoder = RFBZRLEDecoder()
+            let format = test.pixelFormat.flatMap(RFBPixelFormat.init(rawValue:)) ?? .rgb888
+            let decoder = RFBZRLEDecoder(pixelFormat: format)
             var rejected = false
             do {
                 for rectangle in test.rectangles {
@@ -51,6 +53,28 @@ private struct Case: Decodable {
             }
             precondition(rejected == test.reject, "Malformed input accepted: \(test.name)")
             print("PASS \(test.name)")
+        }
+        for format in [RFBPixelFormat.rgb565, .rgb332, .rgb332Padded] {
+            let count = format == .rgb565 ? 65536 : 256
+            var raw = Data()
+            var expected = Data()
+            for value in 0..<count {
+                raw.append(UInt8(truncatingIfNeeded: value))
+                if format == .rgb565 { raw.append(UInt8(value >> 8)) }
+                if format == .rgb332Padded { raw.append(contentsOf: [17,34,51]) }
+                let maxima = format == .rgb565 ? [31,63,31] : [7,7,3]
+                let shifts = format == .rgb565 ? [11,5,0] : [5,2,0]
+                for channel in 0..<3 {
+                    let component = (value >> shifts[channel]) & maxima[channel]
+                    expected.append(UInt8((Double(component) / Double(maxima[channel]) * 255).rounded()))
+                }
+                expected.append(255)
+            }
+            var actual = Data(count: count * 4)
+            RFBPixelCopy.copy(raw, into: &actual, destinationWidth: 256, x: 0, y: 0,
+                              width: 256, height: count / 256, pixelFormat: format)
+            precondition(actual == expected, "Exhaustive Raw color conversion: \(format)")
+            print("PASS exhaustive \(format) Raw conversion")
         }
         // Compare every byte with the previous Raw conversion, including a
         // subrectangle offset whose neighboring pixels must remain unchanged.

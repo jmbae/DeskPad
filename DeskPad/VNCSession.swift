@@ -80,7 +80,7 @@ final class VNCSessionModel {
     private var client: RFBClient?
     private var sessionTask: Task<Void, Never>?
 
-    func connect(to savedConnection: SavedConnection, password: String? = nil) {
+    func connect(to savedConnection: SavedConnection, password: String? = nil, colorQuality: VNCColorQuality = .fullColor) {
         disconnect()
         let generation = self.generation
         let client = RFBClient(
@@ -88,6 +88,7 @@ final class VNCSessionModel {
             port: savedConnection.port,
             username: savedConnection.username,
             password: password,
+            pixelFormat: colorQuality.pixelFormat,
             model: self,
             generation: generation
         )
@@ -303,7 +304,8 @@ private actor RFBClient {
     private weak var model: VNCSessionModel?
     private let generation: UUID
     private let timeoutState = RFBTimeoutState()
-    private let zrleDecoder = RFBZRLEDecoder()
+    private let pixelFormat: RFBPixelFormat
+    private let zrleDecoder: RFBZRLEDecoder
     private var hasFrame = false
     private var firstFrameTimeout: Task<Void, Never>?
     private let queue = DispatchQueue(label: "DeskPad.RFBTransport")
@@ -315,11 +317,13 @@ private actor RFBClient {
     private let maximumPixels = 32_000_000
     private let responseTimeout: DispatchTimeInterval = .seconds(20)
 
-    init(host: String, port: UInt16, username: String, password: String?, model: VNCSessionModel, generation: UUID) {
+    init(host: String, port: UInt16, username: String, password: String?, pixelFormat: RFBPixelFormat, model: VNCSessionModel, generation: UUID) {
         self.host = host
         self.port = port
         self.username = username
         self.password = password
+        self.pixelFormat = pixelFormat
+        self.zrleDecoder = RFBZRLEDecoder(pixelFormat: pixelFormat)
         self.model = model
         self.generation = generation
     }
@@ -328,7 +332,12 @@ private actor RFBClient {
         guard let endpointPort = NWEndpoint.Port(rawValue: port) else {
             throw ClientError.connection("포트 번호가 올바르지 않습니다.")
         }
-        let connection = NWConnection(host: NWEndpoint.Host(host), port: endpointPort, using: .tcp)
+        let tcpOptions = NWProtocolTCP.Options()
+        // Input events are small interactive messages; do not hold them for
+        // Nagle coalescing while screen updates are in flight.
+        tcpOptions.noDelay = true
+        let parameters = NWParameters(tls: nil, tcp: tcpOptions)
+        let connection = NWConnection(host: NWEndpoint.Host(host), port: endpointPort, using: parameters)
         self.connection = connection
         try await start(connection)
 
@@ -721,11 +730,10 @@ private actor RFBClient {
 
     private func sendPixelFormat() async throws {
         var message = Data([0, 0, 0, 0])
-        message.append(contentsOf: [32, 24, 0, 1])
-        message.appendUInt16(255)
-        message.appendUInt16(255)
-        message.appendUInt16(255)
-        message.append(contentsOf: [16, 8, 0, 0, 0, 0])
+        message.append(pixelFormat.wireBytes)
+        #if DEBUG
+        VNCControlDiagnostics.logger.notice("pixel format=\(self.pixelFormat.rawValue, privacy: .public) bytes_per_pixel=\(self.pixelFormat.bytesPerPixel)")
+        #endif
         try await send(message)
     }
 
@@ -798,7 +806,7 @@ private actor RFBClient {
                 guard !pixelCount.overflow, pixelCount.partialValue <= maximumPixels else {
                     throw ClientError.invalidServerMessage("Raw 사각형 크기가 허용 범위를 넘었습니다.")
                 }
-                let dataLength = pixelCount.partialValue.multipliedReportingOverflow(by: 4)
+                let dataLength = pixelCount.partialValue.multipliedReportingOverflow(by: pixelFormat.bytesPerPixel)
                 guard !dataLength.overflow else {
                     throw ClientError.invalidServerMessage("Raw 데이터 길이 overflow.")
                 }
@@ -823,7 +831,7 @@ private actor RFBClient {
                     throw ClientError.invalidServerMessage("ZRLE 사각형이 화면 경계를 벗어났습니다.")
                 }
                 let compressedLength = Int(try await readUInt32())
-                let maximumCompressed = try RFBZRLEDecoder.maximumCompressedLength(width: rectWidth, height: rectHeight)
+                let maximumCompressed = try RFBZRLEDecoder.maximumCompressedLength(width: rectWidth, height: rectHeight, pixelFormat: pixelFormat)
                 guard compressedLength > 0, compressedLength <= maximumCompressed else {
                     throw ClientError.invalidServerMessage("ZRLE 압축 길이가 허용 범위를 넘었습니다.")
                 }
@@ -899,7 +907,7 @@ private actor RFBClient {
 
     private func copyRaw(_ source: Data, x: Int, y: Int, width rectWidth: Int, height rectHeight: Int) {
         RFBPixelCopy.copy(source, into: &pixels, destinationWidth: width, x: x, y: y,
-                          width: rectWidth, height: rectHeight)
+                          width: rectWidth, height: rectHeight, pixelFormat: pixelFormat)
     }
 
     private func copyRectangle(sourceX: Int, sourceY: Int, x: Int, y: Int, width rectWidth: Int, height rectHeight: Int) {
