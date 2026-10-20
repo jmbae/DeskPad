@@ -255,14 +255,14 @@ private func makeBlock(_ data: Data) throws -> CMBlockBuffer {
 #if DEBUG
 /// Independent native decode for bounded, content-free audio acceptance metrics.
 /// This measures received PCM, not speaker output or perceived A/V synchronization.
-private final class HighPerformanceAudioDiagnostic {
+final class HighPerformanceAudioDiagnostic {
     private var converter: AudioConverterRef?
     private var packetFrames: UInt32 = 480
     private var channels: UInt32 = 2
     private var count = 0
-    private var nonSilent = 0
+    private(set) var nonSilent = 0
     private var maximumPeak: Float = 0
-    private var decodedFrames: UInt64 = 0
+    private(set) var decodedFrames: UInt64 = 0
 
     func inspect(_ sample: CMSampleBuffer, clock: Double) {
         count += 1
@@ -287,19 +287,23 @@ private final class HighPerformanceAudioDiagnostic {
             let input = Input(count: length)
             try requireStatus(CMBlockBufferCopyDataBytes(block, atOffset: 0, dataLength: length, destination: input.bytes))
             var pcm = [Float](repeating: 0, count: 4096 * Int(channels))
-            var frames: UInt32 = 4096
+            var frames: UInt32 = packetFrames
             let status = pcm.withUnsafeMutableBytes { output -> OSStatus in
                 var buffers = AudioBufferList(mNumberBuffers: 1, mBuffers: AudioBuffer(mNumberChannels: channels, mDataByteSize: UInt32(output.count), mData: output.baseAddress))
                 return AudioConverterFillComplexBuffer(converter, { _, count, buffers, descriptions, context in
                     let input = Unmanaged<Input>.fromOpaque(context!).takeUnretainedValue()
-                    guard !input.delivered else { count.pointee = 0; return noErr }
+                    guard !input.delivered else {
+                        // Zero packets + noErr means permanent end-of-stream.
+                        // RTP supplies another AU later; preserve decoder state.
+                        count.pointee = 0; return -12345
+                    }
                     input.delivered = true; count.pointee = 1
                     buffers.pointee = AudioBufferList(mNumberBuffers: 1, mBuffers: AudioBuffer(mNumberChannels: 2, mDataByteSize: UInt32(input.count), mData: input.bytes))
                     descriptions?.pointee = input.description
                     return noErr
                 }, Unmanaged.passUnretained(input).toOpaque(), &frames, &buffers, nil)
             }
-            try requireStatus(status)
+            if status != -12345 { try requireStatus(status) }
             let peak = pcm.prefix(Int(frames * channels)).reduce(Float(0)) { max($0, abs($1)) }
             decodedFrames += UInt64(frames); maximumPeak = max(maximumPeak, peak)
             if peak > 0.001 { nonSilent += 1 }
