@@ -28,6 +28,11 @@ actor AppleHPDatagramTransport {
     private var heartbeatTask: Task<Void, Never>?
     private let inbox = AppleHPDatagramInbox()
     private var receiverTask: Task<Void, Never>?
+    private var reorderTask: Task<Void, Never>?
+    private var videoReorder = HighPerformanceRTPReorderBuffer()
+    private var videoDelivery: [HighPerformanceRTPPacket] = []
+    private var deliveringVideo = false
+    private var nackCount = 0
 
     init(offer: AppleHPMediaOffer, videoPayloadType: UInt8 = 123, pipeline: HighPerformanceMediaPipeline, onPlaying: @escaping () async -> Void, onFailure: @escaping (AppleHPFailure) async -> Void) throws {
         self.expectedVideoPayloadType = videoPayloadType
@@ -60,6 +65,13 @@ actor AppleHPDatagramTransport {
             for await packet in packets {
                 guard !Task.isCancelled else { break }
                 await self?.consume(packet.data, stream: packet.stream)
+            }
+        }
+        reorderTask = Task { [weak self] in
+            while !Task.isCancelled {
+                try? await Task.sleep(for: .milliseconds(20))
+                guard !Task.isCancelled else { break }
+                await self?.flushVideoReorder()
             }
         }
         heartbeatTask = Task {
@@ -129,9 +141,56 @@ actor AppleHPDatagramTransport {
         inbox.finish()
         receiverTask?.cancel(); receiverTask = nil
         heartbeatTask?.cancel(); heartbeatTask = nil
+        reorderTask?.cancel(); reorderTask = nil
+        videoDelivery.removeAll()
+        videoReorder = HighPerformanceRTPReorderBuffer()
         for socket in sockets { socket.close() }
         sockets.removeAll()
     }
+    private func flushVideoReorder() async {
+        guard active, negotiated, videoReorder.hasPending else { return }
+        await deliverVideo(videoReorder.flush(now: ProcessInfo.processInfo.systemUptime))
+    }
+
+    private func deliverVideo(_ output: HighPerformanceRTPReorderBuffer.Output) async {
+        guard active else { return }
+        if let remoteVideoSSRC, !output.missing.isEmpty,
+           let nack = HighPerformanceNACK.compound(sender: videoSSRC, media: remoteVideoSSRC, sequences: output.missing) {
+            do {
+                sockets[0].send(try videoFeedback.protect(nack))
+                nackCount += 1
+                #if DEBUG
+                if nackCount <= 3 || nackCount % 100 == 0 {
+                    VNCControlDiagnostics.logger.notice("HP video NACK count=\(self.nackCount) missing=\(output.missing.count)")
+                }
+                #endif
+            }
+            catch { failMedia(.playbackFailure); return }
+        }
+        // Timer and socket processing may re-enter this actor while the main
+        // actor decodes. Only one drain delivers ordered video to the pipeline.
+        guard videoDelivery.count + output.packets.count <= 1024,
+              videoDelivery.reduce(0, { $0 + $1.payload.count }) + output.packets.reduce(0, { $0 + $1.payload.count }) <= 12 * 1024 * 1024 else {
+            failMedia(.playbackFailure); return
+        }
+        videoDelivery.append(contentsOf: output.packets)
+        guard !deliveringVideo else { return }
+        deliveringVideo = true
+        defer { deliveringVideo = false }
+        while active, !videoDelivery.isEmpty {
+            let packet = videoDelivery.removeFirst()
+            do { try await pipeline.consumeVideo(packet) }
+            catch let error as HighPerformancePlaybackError {
+                if case .backpressure = error { requestKeyframe() }
+                else { failMedia(.playbackFailure); return }
+            } catch { requestKeyframe() }
+            let playing = await pipeline.isPlaying
+            if active, !didStart, playing {
+                didStart = true; await onPlaying()
+            }
+        }
+    }
+
     private func decodeControl(_ data: Data, stream: Int) throws -> Data {
         guard data.count >= 8 else { throw HighPerformanceSRTPError.malformedPacket }
         let ssrc = data.dropFirst(4).prefix(4).reduce(UInt32(0)) { ($0 << 8) | UInt32($1) }
@@ -172,8 +231,9 @@ actor AppleHPDatagramTransport {
                     throw HighPerformanceMediaError.malformedPacket
                 }
                 if stream == 0 { try await pipeline.consumeAudioAccessUnit(packet) }
-                else { try await pipeline.consumeVideo(packet) }
-                if !didStart, await pipeline.isPlaying {
+                else { await deliverVideo(videoReorder.insert(packet, now: ProcessInfo.processInfo.systemUptime)) }
+                let playing = await pipeline.isPlaying
+                if active, !didStart, playing {
                     didStart = true; await onPlaying()
                 }
                 counts[stream] += 1

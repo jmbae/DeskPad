@@ -2,7 +2,7 @@ import Foundation
 
 /// Authenticated video only, one instance per SSRC. Uses monotonic arrival time
 /// solely for bounded repair deadlines, never as an A/V presentation timestamp.
-struct HighPerformanceRTPReorderBuffer {
+nonisolated struct HighPerformanceRTPReorderBuffer {
     struct Output {
         var packets: [HighPerformanceRTPPacket] = []
         var missing: [UInt16] = []
@@ -83,7 +83,7 @@ struct HighPerformanceRTPReorderBuffer {
 }
 
 /// RFC4585 generic NACK with an empty RR prefix, carried in authenticated SRTCP.
-enum HighPerformanceNACK {
+nonisolated enum HighPerformanceNACK {
     static func compound(sender: UInt32, media: UInt32, sequences: [UInt16]) -> Data? {
         let missing = Set(sequences.prefix(1024)).sorted()
         guard !missing.isEmpty else { return nil }
