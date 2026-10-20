@@ -9,6 +9,7 @@ import Foundation
         precondition(!inbox.submit(Data(), stream: 0))
         precondition(!inbox.submit(Data(repeating: 0, count: 65536), stream: 0))
         precondition(!inbox.submit(Data([4]), stream: 2))
+        precondition(inbox.droppedPackets == 1)
         inbox.finish()
         var packets: [UInt8] = []
         var streams: [Int] = []

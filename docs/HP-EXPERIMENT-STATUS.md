@@ -39,12 +39,19 @@ The native synchronizer no longer waits for an empty audio renderer.
 
 ## Remaining release acceptance
 
-The Mac was locked when native UI access was attempted; live testing is waiting
-for the user to unlock it. No live HP connection or host display mutation was
-performed in this implementation pass. First-use server trust requires an
-explicit app confirmation. Offline tests do not prove Apple interoperability,
-actual non-silent server audio, perceptual A/V synchronization, sustained playback,
-input coordinate correctness, reconnect or physical display invariance.
+Live testing after unlock now authenticates against the saved remote Mac and
+negotiates 6016×3384 HEVC (payload type 100). Authenticated audio and video RTP
+and both sender reports arrive. H.264 at this canvas produced no video packets;
+a separate local synthetic encoder probe also failed at 6016×3384 for H.264,
+while HEVC succeeded. This is supporting evidence, not a remote encoder log.
+
+Live first-frame acceptance still fails: the first HEVC aggregation packet is
+rejected and the 64-packet inbox drops part of the initial IDR burst. These are
+under repair. Six native simulator tests pass including displayed HEVC 4:2:0 and
+4:4:4, but do not establish real-host playback. Non-silent remote audio,
+perceptual A/V sync, sustained playback, input and reconnect remain unverified.
+No display configuration command is sent. Local display measurements are not
+proof of the remote physical display state.
 
 The observed answer does not provide a validated AAC AudioSpecificConfig; its
 protobuf field 12 is opaque, not assumed to be ASC. Actual supported audio

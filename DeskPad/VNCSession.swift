@@ -656,14 +656,14 @@ private actor RFBClient {
                     let cipher = try AppleHPRecordCipher(wrapKey: key)
                     try cipher.installRekey(payload: payload)
                     VNCControlDiagnostics.logger.notice("HP probe encrypted channel key received")
-                    let offer = try AppleHPMediaOffer.make()
+                    let offer = try AppleHPMediaOffer.make(videoProfile: .hevcSinglePicture)
                     hpCipher = cipher
                     let playback = await HighPerformancePlayback()
-                    let pipeline = try await HighPerformanceMediaPipeline(output: playback, videoPayloadType: 123)
+                    let pipeline = try await HighPerformanceMediaPipeline(output: playback, videoPayloadType: 100, videoCodec: .hevc)
                     width = Int(header.readUInt16(at: 0)); height = Int(header.readUInt16(at: 2))
                     try validateDimensions(width: width, height: height)
                     await model?.attachHighPerformance(playback, width: width, height: height, generation: generation)
-                    let media = try AppleHPDatagramTransport(offer: offer, pipeline: pipeline, onPlaying: { [weak self] in
+                    let media = try AppleHPDatagramTransport(offer: offer, videoPayloadType: 100, pipeline: pipeline, onPlaying: { [weak self] in
                         await self?.awaitHighPerformancePresentation(playback)
                     }, onFailure: { [weak self] in
                         await self?.expireHighPerformanceMedia()

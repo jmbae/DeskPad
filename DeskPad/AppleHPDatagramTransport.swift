@@ -15,6 +15,7 @@ actor AppleHPDatagramTransport {
     private var lastAuthenticatedPacket = ProcessInfo.processInfo.systemUptime
     private var didStart = false
     private var negotiated = false
+    private let expectedVideoPayloadType: UInt8
     private var remoteVideoSSRC: UInt32?
     private var remoteAudioSSRC: UInt32?
     private var lastPictureLossRequest = -Double.infinity
@@ -28,7 +29,8 @@ actor AppleHPDatagramTransport {
     private let inbox = AppleHPDatagramInbox()
     private var receiverTask: Task<Void, Never>?
 
-    init(offer: AppleHPMediaOffer, pipeline: HighPerformanceMediaPipeline, onPlaying: @escaping () async -> Void, onFailure: @escaping () async -> Void) throws {
+    init(offer: AppleHPMediaOffer, videoPayloadType: UInt8 = 123, pipeline: HighPerformanceMediaPipeline, onPlaying: @escaping () async -> Void, onFailure: @escaping () async -> Void) throws {
+        self.expectedVideoPayloadType = videoPayloadType
         self.pipeline = pipeline; self.onPlaying = onPlaying; self.onFailure = onFailure
         heartbeat = try .init(masterKeyBlob: offer.audioKeys.viewerToServer, ssrc: offer.audioSSRC)
         videoFeedback = try .init(masterKeyBlob: offer.videoKeys.viewerToServer, ssrc: offer.videoSSRC)
@@ -69,6 +71,7 @@ actor AppleHPDatagramTransport {
     }
     private func pulse() {
         guard active, sockets.count == 2 else { return }
+        if negotiated, !didStart { requestKeyframe() }
         if negotiated, ProcessInfo.processInfo.systemUptime - lastAuthenticatedPacket > 15 {
             failMedia()
             return
@@ -86,12 +89,18 @@ actor AppleHPDatagramTransport {
         } catch { failMedia() }
     }
     func accept(_ answer: AppleHPMediaAnswer) throws {
-        guard !negotiated, answer.secondVideo == nil, answer.video.codecPayloadType == 123 else {
+        guard !negotiated, answer.secondVideo == nil, answer.video.codecPayloadType == expectedVideoPayloadType else {
             throw HighPerformanceMediaError.malformedPacket
         }
         #if DEBUG
         VNCControlDiagnostics.logger.notice("HP answer status=\(answer.status) videoPT=\(answer.video.codecPayloadType ?? 0) width=\(answer.video.width ?? 0) height=\(answer.video.height ?? 0)")
         #endif
+        // Some servers omit the optional tile count in their answer. The offer
+        // requests one picture; depacketization independently rejects a second SSRC.
+        if answer.video.descriptionFields[6] != nil {
+            let tiles = try AppleHPProtoValue.oneNumber(answer.video.descriptionFields, 6)
+            guard tiles <= 1 else { throw HighPerformanceMediaError.malformedPacket }
+        }
         remoteVideoSSRC = answer.video.ssrc
         remoteAudioSSRC = answer.audio.ssrc
         negotiated = true
@@ -157,6 +166,9 @@ actor AppleHPDatagramTransport {
                 let packet = try decodeMedia(data, stream: stream)
                 lastAuthenticatedPacket = ProcessInfo.processInfo.systemUptime
                 guard packet.ssrc == (stream == 0 ? remoteAudioSSRC : remoteVideoSSRC) else {
+                    // Authentication has succeeded. A second video SSRC is an
+                    // unsupported tiled session, not an unauthenticated stray packet.
+                    if stream == 1 { failMedia(); return }
                     throw HighPerformanceMediaError.malformedPacket
                 }
                 if stream == 0 { try await pipeline.consumeAudioAccessUnit(packet) }
@@ -167,7 +179,7 @@ actor AppleHPDatagramTransport {
                 counts[stream] += 1
                 if counts[stream] == 1 || counts[stream] % 500 == 0 {
                     #if DEBUG
-                    VNCControlDiagnostics.logger.notice("HP authenticated media stream=\(stream) packets=\(self.counts[stream]) pt=\(packet.payloadType) bytes=\(packet.payload.count)")
+                    VNCControlDiagnostics.logger.notice("HP authenticated media stream=\(stream) packets=\(self.counts[stream]) pt=\(packet.payloadType) bytes=\(packet.payload.count) inboxDrops=\(self.inbox.droppedPackets)")
                     #endif
                 }
             }
