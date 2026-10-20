@@ -73,6 +73,19 @@ final class RemoteInputTests: XCTestCase {
         XCTAssertNil(RemoteCursorPresentation(transparent).nativeShape)
     }
 
+    func testColoredCursorRetainsBitmapAndEmptyCursorHidesSystemPointer() throws {
+        let colored = RFBCursorShape(width: 1, height: 1, hotspotX: 0, hotspotY: 0,
+                                     rgba: Data([255, 0, 0, 255]))
+        let presentation = RemoteCursorPresentation(colored)
+        XCTAssertNil(presentation.nativeShape, "Color conveys remote state and must not become a monochrome silhouette")
+        XCTAssertNotNil(presentation.image)
+        let view = RemoteDesktopUIView(frame: CGRect(x: 0, y: 0, width: 100, height: 100))
+        view.remoteCursor = cursor(width: 0, height: 0, hotspotX: 0, hotspotY: 0, mask: [])
+        let interaction = try XCTUnwrap(view.interactions.first { $0 is UIPointerInteraction } as? UIPointerInteraction)
+        XCTAssertNotNil(view.pointerInteraction(interaction, styleFor: UIPointerRegion(rect: view.bounds)))
+        XCTAssertTrue(RemoteCursorPresentation(try XCTUnwrap(view.remoteCursor)).isHidden)
+    }
+
     func testTouchShowsActualRemoteCursorWithoutDecorativeRing() throws {
         let view = RemoteDesktopUIView(frame: CGRect(x: 0, y: 0, width: 200, height: 200))
         view.desktopSize = CGSize(width: 200, height: 200)
