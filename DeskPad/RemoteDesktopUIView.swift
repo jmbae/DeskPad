@@ -88,6 +88,16 @@ final class RemoteDesktopUIView: UIView {
     var onKey: ((UInt32, Bool) -> Void)?
     var onPointer: ((CGPoint, UInt8) -> Void)?
     var onFocusChanged: ((Bool) -> Void)?
+    var onInputLanguageChanged: ((String?) -> Void)?
+    @objc private func inputLanguageDidChange() {
+        guard isFirstResponder else { return }
+        onInputLanguageChanged?(textInputMode?.primaryLanguage)
+    }
+    private func observeInputLanguage() {
+        NotificationCenter.default.addObserver(self, selector: #selector(inputLanguageDidChange),
+            name: UITextInputMode.currentInputModeDidChangeNotification, object: nil)
+    }
+    deinit { NotificationCenter.default.removeObserver(self) }
     private var pressedKeys: [UIKeyboardHIDUsage: UInt32] = [:]
     private var pointerMask: UInt8 = 0
     private var pointerPoint: CGPoint = .zero
@@ -162,12 +172,12 @@ final class RemoteDesktopUIView: UIView {
         releaseAllKeys()
         wantsVirtualKeyboard = false
         let result = super.resignFirstResponder()
-        if result { onFocusChanged?(false) }
+        if result { onFocusChanged?(false); onInputLanguageChanged?(nil) }
         return result
     }
     override func becomeFirstResponder() -> Bool {
         let result = super.becomeFirstResponder()
-        if result { onFocusChanged?(wantsVirtualKeyboard) }
+        if result { onFocusChanged?(wantsVirtualKeyboard); inputLanguageDidChange() }
         return result
     }
 
@@ -205,6 +215,7 @@ final class RemoteDesktopUIView: UIView {
         isMultipleTouchEnabled = true
         setupPointerMarker()
         setupGestureRecognizers()
+        observeInputLanguage()
     }
 
     required init?(coder: NSCoder) {
@@ -213,6 +224,7 @@ final class RemoteDesktopUIView: UIView {
         isMultipleTouchEnabled = true
         setupPointerMarker()
         setupGestureRecognizers()
+        observeInputLanguage()
     }
 
     override var canBecomeFirstResponder: Bool { true }
@@ -710,6 +722,7 @@ extension RemoteDesktopUIView: UITextInput {
     }
 
     func insertText(_ text: String) {
+        inputLanguageDidChange()
         #if DEBUG
         recordCompositionCallback("insertText", text: text)
         #endif
@@ -734,6 +747,7 @@ extension RemoteDesktopUIView: UITextInput {
     // MARK: Marked Text (IME Composition)
 
     func setMarkedText(_ markedText: String?, selectedRange: NSRange) {
+        inputLanguageDidChange()
         #if DEBUG
         recordCompositionCallback("setMarkedText", text: markedText)
         #endif

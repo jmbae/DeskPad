@@ -327,6 +327,10 @@ private struct SessionView: View {
                 }
                 ToolbarItemGroup(placement: .topBarTrailing) {
                     if case .connected = session.state {
+                        Text("iPad · \(keyboardController.inputLanguageLabel)")
+                            .font(.subheadline.monospacedDigit())
+                            .accessibilityLabel("iPad 입력 언어: \(keyboardController.inputLanguageLabel)")
+                            .accessibilityHint("원격 Mac의 입력 언어가 아닌 iPad 키보드의 선택 상태입니다.")
                         Button {
                             if keyboardController.isFocused {
                                 keyboardController.dismiss()
@@ -465,6 +469,17 @@ private struct UserMessage: Identifiable {
 private final class RemoteKeyboardController {
     fileprivate weak var inputView: RemoteDesktopUIView?
     fileprivate var isFocused = false
+    fileprivate var inputLanguage: String?
+    var inputLanguageLabel: String {
+        guard let inputLanguage, !inputLanguage.isEmpty else { return "언어 미확인" }
+        let base = inputLanguage.replacingOccurrences(of: "_", with: "-").split(separator: "-").first.map(String.init)
+        switch base {
+        case "ko": return "한글"
+        case "en": return "영문"
+        case "emoji": return "이모지"
+        default: return Locale.current.localizedString(forIdentifier: inputLanguage) ?? inputLanguage
+        }
+    }
     func focus() { inputView?.toggleVirtualKeyboard() }
     func dismiss() { _ = inputView?.resignFirstResponder() }
 }
@@ -487,6 +502,9 @@ private struct RemoteDesktopSurface: UIViewRepresentable {
     func makeUIView(context: Context) -> RemoteDesktopUIView {
         let view = RemoteDesktopUIView()
         view.onFocusChanged = { [weak controller] in controller?.isFocused = $0 }
+        view.onInputLanguageChanged = { [weak controller] in
+            if controller?.inputLanguage != $0 { controller?.inputLanguage = $0 }
+        }
         updateUIView(view, context: context)
         return view
     }
