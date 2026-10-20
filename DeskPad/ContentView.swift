@@ -57,7 +57,7 @@ struct ContentView: View {
                     Menu {
                         ColorQualityPicker(selection: $colorQuality)
                     } label: {
-                        Label("화질: \(colorQuality.title)", systemImage: "speedometer")
+                        Label("화면 모드: \(colorQuality.title)", systemImage: "speedometer")
                     }
                 }
                 ToolbarItem(placement: .topBarTrailing) {
@@ -340,7 +340,7 @@ private struct SessionView: View {
                         } label: { Label("클립보드", systemImage: "doc.on.clipboard") }
                         Menu {
                             ColorQualityPicker(selection: $colorQuality)
-                            Text("화질을 바꾸면 다시 연결합니다.")
+                            Text("모드를 바꾸면 다시 연결합니다.")
                             Divider()
                             Button("화면에 맞추기") { keyboardController.inputView?.resetViewport() }
                             Button("실제 크기") { keyboardController.inputView?.actualSize() }
@@ -478,7 +478,7 @@ private struct ColorQualityPicker: View {
     @Binding var selection: VNCColorQuality
 
     var body: some View {
-        Picker("화질", selection: $selection) {
+        Picker("화면 모드", selection: $selection) {
             ForEach(VNCColorQuality.allCases, id: \.self) { quality in
                 Text(quality.title).tag(quality)
             }
@@ -490,15 +490,15 @@ private struct ColorQualityPicker: View {
 private extension VNCColorQuality {
     var title: String {
         switch self {
-        case .lowLatency: "속도 우선"
-        case .fullColor: "원본 색상"
+        case .lowLatency: "초저지연 모드"
+        case .fullColor: "무손실 모드"
         }
     }
 
     var detail: String {
         switch self {
-        case .lowLatency: "색상 정밀도를 낮춰 전송량과 지연을 줄입니다. 사진과 그라데이션 표현이 달라질 수 있습니다."
-        case .fullColor: "모든 색상을 유지합니다. 화면 변화가 크면 전송량이 늘어납니다."
+        case .lowLatency: "색상 정밀도를 낮춰 반응 속도를 우선합니다. 사진과 그라데이션 표현이 달라질 수 있으며, 네트워크 상태에 따라 지연이 발생할 수 있습니다."
+        case .fullColor: "색상 손실 없이 화면을 전송합니다. 화면 변화가 크면 전송량과 지연이 늘어날 수 있습니다."
         }
     }
 }
