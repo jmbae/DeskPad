@@ -22,6 +22,13 @@ The TCP suite now verifies preferred ZRLE negotiation, persistent rectangles, ma
 
 Compressed receive length is bounded by rectangle size and a 128 MiB absolute limit. Inflated bytes are bounded by the worst legal tile payload, and decode checks the same fixed receive deadline during inflate and tile processing. No progress or repeated message renews a payload budget. DEBUG logs include only sizes, rectangle counts, and receive/decode/update timings.
 
+## Input latency and ordering
+
+Run `Tests/Session/run-input-queue.sh` for deterministic suspended-transport tests.
+A 4,000-movement burst must retain only the latest pending motion between button
+edges, keys, clipboard commands and wheel events. The harness also checks that
+cancellation removes pending input, an old suspended sender cannot drain a new
+session, and a suspended send does not retain the queue owner.
 ## Color depth and interactive TCP
 
 `VNCSessionModel.connect(..., colorQuality:)` selects one of two formats for the lifetime of a connection: `.fullColor` (RGB888 in 32-bit words) or `.lowLatency` (RGB565 in 16-bit words). The API default preserves full color; the interface selects the user's preference explicitly. ZRLE CPIXELs are respectively 3 or 2 bytes; Raw uses 4 or 2 bytes. RGB565 deliberately reduces color precision while output storage stays RGBA. Reconnecting is required to change quality so no old compressed stream is interpreted with a new format.
