@@ -58,7 +58,7 @@ add('oversized-compressed-for-tiny-tile',1,1,b'',compressed=b'\0'*70_000,reject=
 add('mid-decode-deadline',4096,4096,(b'\1'+red)*(64*64),reject=True)
 cases[-1]['budgetMilliseconds']=1
 # The same tile grammar uses 2-byte RGB565 or 1-byte RGB332 CPIXELs.
-for fmt,byte_count,shifts,maxima,mid in [('rgb565',2,[11,5,0],[31,63,31],0x8c65),('rgb332',1,[5,2,0],[7,7,3],0x91)]:
+for fmt,byte_count,shifts,maxima,mid in [('rgb565',2,[11,5,0],[31,63,31],0x8c65),('rgb332',1,[5,2,0],[7,7,3],0x91),('rgb332Padded',3,[5,2,0],[7,7,3],0x91)]:
     def pixel(value): return value.to_bytes(byte_count,'little')
     def expected(values):
         return b''.join(bytes([((value>>shift & maximum)*255+maximum//2)//maximum for shift,maximum in zip(shifts,maxima)]+[255]) for value in values)

@@ -9,25 +9,27 @@ nonisolated enum VNCColorQuality: String, CaseIterable, Sendable {
         switch self {
         case .fullColor: .rgb888
         case .balanced: .rgb565
-        case .lowLatency: .rgb332
+        case .lowLatency: .rgb332Padded
         }
     }
 }
 
-// The three true-color formats advertised by this client. Pixel words are
+// The true-color formats supported by this client. Low-latency RGB332 uses
+// a 32-bit container for servers that reject eight-bit pixel words. Pixel words are
 // little endian; channel maxima in SetPixelFormat are always network endian.
 nonisolated enum RFBPixelFormat: String, Sendable {
-    case rgb888, rgb565, rgb332
+    case rgb888, rgb565, rgb332, rgb332Padded
 
     var bytesPerPixel: Int {
-        switch self { case .rgb888: 4; case .rgb565: 2; case .rgb332: 1 }
+        switch self { case .rgb888, .rgb332Padded: 4; case .rgb565: 2; case .rgb332: 1 }
     }
-    var bytesPerCPixel: Int { self == .rgb888 ? 3 : bytesPerPixel }
+    var bytesPerCPixel: Int { bytesPerPixel == 4 ? 3 : bytesPerPixel }
     var wireBytes: Data {
         switch self {
         case .rgb888: Data([32,24,0,1,0,255,0,255,0,255,16,8,0,0,0,0])
         case .rgb565: Data([16,16,0,1,0,31,0,63,0,31,11,5,0,0,0,0])
         case .rgb332: Data([8,8,0,1,0,7,0,7,0,3,5,2,0,0,0,0])
+        case .rgb332Padded: Data([32,8,0,1,0,7,0,7,0,3,5,2,0,0,0,0])
         }
     }
 
@@ -39,7 +41,7 @@ nonisolated enum RFBPixelFormat: String, Sendable {
             return (UInt8((((value >> 11) & 31) * 255 + 15) / 31),
                     UInt8((((value >> 5) & 63) * 255 + 31) / 63),
                     UInt8(((value & 31) * 255 + 15) / 31))
-        case .rgb332:
+        case .rgb332, .rgb332Padded:
             return (UInt8((((value >> 5) & 7) * 255 + 3) / 7),
                     UInt8((((value >> 2) & 7) * 255 + 3) / 7),
                     UInt8(((value & 3) * 255 + 1) / 3))
@@ -48,7 +50,8 @@ nonisolated enum RFBPixelFormat: String, Sendable {
 }
 
 // RFC 6143 §7.7.6 / rfbproto ZRLE: one zlib stream per connection.
-// CPIXEL uses B,G,R for RGB888 and little-endian 2/1-byte words for RGB565/332.
+// CPIXEL uses three bytes for 32-bit containers, two for RGB565, and one
+// for native RGB332; the selected format determines the meaningful color bits.
 // This instance belongs exclusively to the transport actor.
 nonisolated final class RFBZRLEDecoder {
     enum DecodeError: LocalizedError {
@@ -127,6 +130,12 @@ nonisolated final class RFBZRLEDecoder {
                     return pixelFormat.rgb(low | high << 8)
                 case .rgb332:
                     return pixelFormat.rgb(UInt32(try byte()))
+                case .rgb332Padded:
+                    // 32bpp depth8 still uses a three-byte CPIXEL per RFC6143.
+                    // The unused upper bytes are padding, not extra channels.
+                    let value = UInt32(try byte())
+                    _ = try byte(); _ = try byte()
+                    return pixelFormat.rgb(value)
                 }
             }
             func runLength(remaining: Int) throws -> Int {

@@ -54,13 +54,14 @@ private struct Case: Decodable {
             precondition(rejected == test.reject, "Malformed input accepted: \(test.name)")
             print("PASS \(test.name)")
         }
-        for format in [RFBPixelFormat.rgb565, .rgb332] {
+        for format in [RFBPixelFormat.rgb565, .rgb332, .rgb332Padded] {
             let count = format == .rgb565 ? 65536 : 256
             var raw = Data()
             var expected = Data()
             for value in 0..<count {
                 raw.append(UInt8(truncatingIfNeeded: value))
                 if format == .rgb565 { raw.append(UInt8(value >> 8)) }
+                if format == .rgb332Padded { raw.append(contentsOf: [17,34,51]) }
                 let maxima = format == .rgb565 ? [31,63,31] : [7,7,3]
                 let shifts = format == .rgb565 ? [11,5,0] : [5,2,0]
                 for channel in 0..<3 {
