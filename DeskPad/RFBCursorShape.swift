@@ -79,7 +79,12 @@ nonisolated final class RFBAppleCursorCache {
     func decode(cacheID: UInt32, compressed: Data, width: Int, height: Int,
                 hotspotX: Int, hotspotY: Int) throws -> RFBCursorShape? {
         // SELECT has no pixels; its rectangle geometry is zero, not hidden.
-        if compressed.isEmpty { return shapes[cacheID] }
+        if compressed.isEmpty {
+            guard let shape = shapes[cacheID] else { return nil }
+            order.removeAll { $0 == cacheID }
+            order.append(cacheID)
+            return shape
+        }
         let maximum = try Self.maximumCompressedLength(width: width, height: height,
             hotspotX: hotspotX, hotspotY: hotspotY)
         guard compressed.count <= maximum else { throw RFBCursorShape.DecodeError.invalidLength }

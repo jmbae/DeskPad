@@ -467,6 +467,9 @@ private actor RFBClient {
         try await sendPixelFormat()
         try await sendEncodings()
         try await requestUpdate(incremental: false)
+        #if DEBUG && DESKPAD_APPLE_CURSOR_STREAM
+        try await sendAppleAutoUpdate()
+        #endif
         await model?.setScreen(width: width, height: height, framebuffer: Data(), generation: generation)
         armFirstFrameTimeout()
 
@@ -762,6 +765,19 @@ private actor RFBClient {
         try await send(message)
     }
 
+    #if DEBUG && DESKPAD_APPLE_CURSOR_STREAM
+    // Interoperability diagnostic only: Apple's 0x09 is not standard RFB.
+    private func sendAppleAutoUpdate() async throws {
+        var message = Data([9, 0, 0, 1, 255, 255, 255, 255])
+        message.appendUInt16(0)
+        message.appendUInt16(0)
+        message.appendUInt16(UInt16(width))
+        message.appendUInt16(UInt16(height))
+        try await send(message)
+        VNCControlDiagnostics.logger.notice("Apple auto framebuffer diagnostic enabled")
+    }
+    #endif
+
     private func requestUpdate(incremental: Bool) async throws {
         var message = Data([3, incremental ? 1 : 0])
         message.appendUInt16(0)
@@ -776,7 +792,14 @@ private actor RFBClient {
         switch messageType {
         case 0:
             let resized = try await readFramebufferUpdate()
+            #if DEBUG && DESKPAD_APPLE_CURSOR_STREAM
+            if resized {
+                try await requestUpdate(incremental: false)
+                try await sendAppleAutoUpdate()
+            }
+            #else
             try await requestUpdate(incremental: !resized)
+            #endif
         case 2:
             break
         case 3:
