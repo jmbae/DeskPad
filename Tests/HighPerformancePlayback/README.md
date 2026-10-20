@@ -14,3 +14,16 @@ ffmpeg -f lavfi -i 'sine=frequency=440:sample_rate=48000:duration=0.1' -ac 2 -c:
 ```
 
 The first AAC packet was extracted with ffprobe. Its generated ASC is `f8e64000`; the test decodes this actual packet with AudioToolbox and checks positive PCM output. VideoToolbox decodes the H.264 fixture to a 64-pixel-wide image. These establish native decoder feasibility; they do not prove playback of Apple server audio or perceptual A/V sync. No live screen content or recorded user audio is included.
+
+The iOS simulator `HighPerformancePlaybackTests` also attaches a display layer to
+an actual test window, presents a generated red H.264 frame without audio, checks
+that decoded pixels are available and the common clock advances, and decodes the
+synthetic AAC-ELD fixture to PCM. The embedded red fixture uses libx264 baseline,
+64×64, yuv420p. Audio fixture ASC remains `f8e64000`; this does not validate the
+Apple wire cookie, RTP audio framing, or perceptual synchronization.
+
+Video starts after its own authenticated Sender Report even if the Mac is silent.
+Audio waits for its independent Sender Report, retaining its NTP offset; obsolete
+late audio preroll is dropped. Native renderer sufficient-data gating is disabled
+because an empty audio renderer must not stall video. `hasDisplayedVideoFrame`
+reports an actual displayed pixel buffer and is distinct from scheduled playback.

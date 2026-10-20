@@ -1,6 +1,7 @@
 import Foundation
 import CoreMedia
 @MainActor final class Sink: HighPerformanceMediaOutput {
+    var presentationSeconds: Double = 0
     var startTimes:[Double]=[]; var audio:[Double]=[];var video:[Double]=[]
     func start(at seconds:Double,playoutDelay:Double)throws { startTimes.append(seconds) }
     func enqueueAudio(_ sample:CMSampleBuffer)throws { audio.append(CMTimeGetSeconds(CMSampleBufferGetPresentationTimeStamp(sample))) }
@@ -22,10 +23,22 @@ import CoreMedia
     for n in 0..<30 { try pipeline.consumeAudioAccessUnit(packet(Data([1,2,3]),seq:UInt16(n),ssrc:2,ts:UInt32(n*480),pt:101)) }
     precondition(sink.startTimes.isEmpty && pipeline.pendingAudioCount<=20 && pipeline.pendingVideoCount<=2)
     try pipeline.observe([HighPerformanceSenderReport(ssrc:1,ntpSeconds:100,ntpFraction:0,rtpTimestamp:90000)],clockRate:90000)
-    precondition(sink.startTimes.isEmpty,"started without audio SR")
+    precondition(sink.startTimes.count == 1 && sink.video.count == 1 && sink.audio.isEmpty, "video must start with its SR while unmapped audio waits")
     try pipeline.observe([HighPerformanceSenderReport(ssrc:2,ntpSeconds:100,ntpFraction:0,rtpTimestamp:4800)],clockRate:48000)
     precondition(sink.startTimes.count==1 && sink.audio.count<=20 && sink.video.count==1,"did not start common timeline")
     precondition(abs(sink.startTimes[0])<0.000001 && abs(sink.video[0])<0.000001 && abs(sink.audio[0])<0.000001)
+    sink.presentationSeconds = 1
+    let playedAudio = sink.audio.count
+    try pipeline.consumeAudioAccessUnit(packet(Data([1,2,3]),seq:31,ssrc:2,ts:14400,pt:101))
+    precondition(sink.audio.count == playedAudio, "late mapped audio must not replay obsolete preroll")
+    let offsetSink = Sink()
+    let offsetPipeline = try HighPerformanceMediaPipeline(output: offsetSink)
+    for (n,nal) in units.enumerated() { try offsetPipeline.consumeVideo(packet(nal,seq:UInt16(n),ssrc:10,ts:90000,pt:100,marker:n==units.count-1)) }
+    try offsetPipeline.observe([HighPerformanceSenderReport(ssrc:10,ntpSeconds:200,ntpFraction:0,rtpTimestamp:90000)],clockRate:90000)
+    try offsetPipeline.consumeAudioAccessUnit(packet(Data([1,2,3]),seq:0,ssrc:20,ts:0,pt:101))
+    precondition(offsetSink.audio.isEmpty, "unmapped audio was played")
+    try offsetPipeline.observe([HighPerformanceSenderReport(ssrc:20,ntpSeconds:200,ntpFraction:0x20000000,rtpTimestamp:0)],clockRate:48000)
+    precondition(offsetSink.video == [0] && offsetSink.audio == [0.125], "independent NTP offset was lost")
     var requests=0; pipeline.onNeedsKeyframe = { requests += 1 }
     try pipeline.consumeVideo(packet(Data([0x61,0x80]),seq:500,ssrc:1,ts:95000,pt:100))
     precondition(requests==1,"loss did not request IDR")
@@ -38,6 +51,6 @@ import CoreMedia
     do { _=try HighPerformanceMediaPipeline(output:Sink(),videoPayloadType:128); fatalError("invalid7bit payload type accepted") } catch {}
     do { _=try HighPerformanceMediaPipeline(output:Sink(),videoPayloadType:101); fatalError("ambiguous audio/video PT accepted") } catch {}
     pipeline.reset();precondition(!pipeline.isPlaying && pipeline.pendingAudioCount==0 && pipeline.pendingVideoCount==0)
-    print("Pipeline: waits for independent SRs, bounded preroll, commonPTS startup and reset passed")
+    print("Pipeline: video-first startup and independent audio SRs, bounded preroll, commonPTS startup and reset passed")
  }
 }

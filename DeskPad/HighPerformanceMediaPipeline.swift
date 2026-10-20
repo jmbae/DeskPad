@@ -2,6 +2,7 @@ import Foundation
 import CoreMedia
 
 @MainActor protocol HighPerformanceMediaOutput: AnyObject {
+    var presentationSeconds: Double { get }
     func start(at senderSeconds: Double, playoutDelay: Double) throws
     func enqueueVideo(_ sample: CMSampleBuffer) throws
     func enqueueAudio(_ sample: CMSampleBuffer) throws
@@ -23,7 +24,7 @@ extension HighPerformancePlayback: HighPerformanceMediaOutput {}
     private struct PendingAudio { let ssrc: UInt32; let timestamp: UInt32; let data: Data }
     private let output: any HighPerformanceMediaOutput
     private let audioFactory = HighPerformanceSampleFactory()
-        private let videoPayloadType: UInt8
+    private let videoPayloadType: UInt8
     private let videoRate: Double
     private let audioRate: Double
     private let audioFrames: UInt32
@@ -142,21 +143,10 @@ extension HighPerformancePlayback: HighPerformanceMediaOutput {}
 
     private func drain() throws {
         if !isPlaying {
-            guard let video = pendingVideo.first, let audio = pendingAudio.first,
-                  let videoPTS = clock.presentationSeconds(ssrc: video.ssrc, timestamp: video.timestamp),
-                  let audioPTS = clock.presentationSeconds(ssrc: audio.ssrc, timestamp: audio.timestamp),
-                  let lastAudio = pendingAudio.last,
-                  let audioEnd = clock.presentationSeconds(ssrc: lastAudio.ssrc, timestamp: lastAudio.timestamp) else { return }
-            // Preserve the IDR as the first decoded frame. If audio has advanced beyond
-            // this short preroll, request a fresh keyframe instead of dropping dependencies.
-            guard abs(videoPTS - audioPTS) <= 0.2 else {
-                if audioPTS > videoPTS { loseVideoContinuity() }
-                return
-            }
-            guard audioEnd + Double(audioFrames) / audioRate >= videoPTS else { return }
-            let start = max(videoPTS, audioPTS)
-            // Queue both media types before starting the shared clock. If enqueue fails,
-            // clear the renderers so a later retry cannot duplicate partially queued audio.
+            // Silent desktops need not emit audio. Video can start with its own SR;
+            // audio remains bounded until its independent NTP mapping is available.
+            guard let video = pendingVideo.first,
+                  let start = clock.presentationSeconds(ssrc: video.ssrc, timestamp: video.timestamp) else { return }
             do {
                 try enqueuePending()
                 try output.start(at: start, playoutDelay: 0.08)
@@ -179,6 +169,11 @@ extension HighPerformancePlayback: HighPerformanceMediaOutput {}
         }
         while let audio = pendingAudio.first {
             guard let pts = clock.presentationSeconds(ssrc: audio.ssrc, timestamp: audio.timestamp) else { break }
+            // A late audio SR must not replay obsolete preroll after video has advanced.
+            if isPlaying && pts + Double(audioFrames) / audioRate < output.presentationSeconds {
+                pendingAudio.removeFirst()
+                continue
+            }
             try output.enqueueAudio(audioFactory.aacAccessUnit(audio.data, presentationSeconds: pts))
             pendingAudio.removeFirst()
         }

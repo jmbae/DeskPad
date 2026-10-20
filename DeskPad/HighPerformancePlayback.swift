@@ -130,7 +130,19 @@ final class HighPerformanceSampleFactory {
     private let audioRenderer = AVSampleBufferAudioRenderer()
     private let synchronizer = AVSampleBufferRenderSynchronizer()
 
+    var presentationSeconds: Double { CMTimeGetSeconds(synchronizer.currentTime()) }
+
+    /// A decoded pixel buffer actually selected for display, not merely queued RTP.
+    var hasDisplayedVideoFrame: Bool {
+        if #available(macOS 14.4, iOS 17.4, *) {
+            return videoLayer.sampleBufferRenderer.displayedPixelBuffer() != nil
+        }
+        return false
+    }
+
     init() {
+        // Idle audio must not hold the shared clock at zero indefinitely.
+        synchronizer.delaysRateChangeUntilHasSufficientMediaData = false
         synchronizer.addRenderer(videoLayer.sampleBufferRenderer)
         synchronizer.addRenderer(audioRenderer)
     }
