@@ -2,6 +2,9 @@ import Foundation
 import AVFoundation
 import AudioToolbox
 import CoreMedia
+#if DEBUG
+import os
+#endif
 
 enum HighPerformancePlaybackError: Error {
     case invalidAccessUnit, missingConfiguration, unsupportedAudio, mediaStatus(OSStatus), backpressure, rendererFailed
@@ -173,12 +176,25 @@ final class HighPerformanceSampleFactory {
     private let audioRenderer = AVSampleBufferAudioRenderer()
     private let synchronizer = AVSampleBufferRenderSynchronizer()
 
+    #if DEBUG
+    private var diagnosticPresentationPolls = 0
+    #endif
     var presentationSeconds: Double { CMTimeGetSeconds(synchronizer.currentTime()) }
 
     /// A decoded pixel buffer actually selected for display, not merely queued RTP.
     var hasDisplayedVideoFrame: Bool {
         if #available(macOS 14.4, iOS 17.4, *) {
-            return videoLayer.sampleBufferRenderer.displayedPixelBuffer() != nil
+            let displayed = videoLayer.sampleBufferRenderer.displayedPixelBuffer() != nil
+            #if DEBUG
+            diagnosticPresentationPolls += 1
+            if diagnosticPresentationPolls <= 2 || diagnosticPresentationPolls % 100 == 0 {
+                let status = videoLayer.sampleBufferRenderer.status.rawValue
+                let error = (videoLayer.sampleBufferRenderer.error as NSError?)?.code ?? 0
+                let time = presentationSeconds
+                VNCControlDiagnostics.logger.notice("HP renderer poll=\(self.diagnosticPresentationPolls) displayed=\(displayed) status=\(status) error=\(error) time=\(time) width=\(self.videoLayer.bounds.width) height=\(self.videoLayer.bounds.height)")
+            }
+            #endif
+            return displayed
         }
         return false
     }

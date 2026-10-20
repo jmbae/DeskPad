@@ -1,5 +1,8 @@
 import Foundation
 import CoreMedia
+#if DEBUG
+import os
+#endif
 
 @MainActor protocol HighPerformanceMediaOutput: AnyObject {
     var presentationSeconds: Double { get }
@@ -40,6 +43,11 @@ extension HighPerformancePlayback: HighPerformanceMediaOutput {}
     private var pendingAudio: [PendingAudio] = []
     private var needsKeyframe = true
     private(set) var isPlaying = false
+    #if DEBUG
+    private var diagnosticVideoPackets = 0
+    private var diagnosticVideoAUs = 0
+    private var diagnosticReports = 0
+    #endif
     var onNeedsKeyframe: (() -> Void)?
     var pendingAudioCount: Int { pendingAudio.count }
     var pendingVideoCount: Int { pendingVideo.count }
@@ -61,6 +69,12 @@ extension HighPerformancePlayback: HighPerformanceMediaOutput {}
     /// Pass the negotiated clock rate for these SSRCs, not a rate inferred from arrival.
     func observe(_ reports: [HighPerformanceSenderReport], clockRate: Double) throws {
         guard clockRate == videoRate || clockRate == audioRate else { throw Failure.unsupportedStream }
+        #if DEBUG
+        diagnosticReports += reports.count
+        if diagnosticReports <= 10 {
+            VNCControlDiagnostics.logger.notice("HP media SR count=\(reports.count) rate=\(clockRate) pending_video=\(self.pendingVideo.count) pending_audio=\(self.pendingAudio.count)")
+        }
+        #endif
         for report in reports {
             if report.ssrc == selectedVideo && clockRate != videoRate { throw Failure.unsupportedStream }
             if report.ssrc == selectedAudio && clockRate != audioRate { throw Failure.unsupportedStream }
@@ -119,6 +133,13 @@ extension HighPerformancePlayback: HighPerformanceMediaOutput {}
     }
 
     private func consumeHEVC(_ packet: HighPerformanceRTPPacket) throws {
+        #if DEBUG
+        diagnosticVideoPackets += 1
+        if diagnosticVideoPackets <= 12 || diagnosticVideoPackets % 2000 == 0 {
+            let nalType = packet.payload.first.map { Int(($0 >> 1) & 63) } ?? -1
+            VNCControlDiagnostics.logger.notice("HP HEVC packet count=\(self.diagnosticVideoPackets) type=\(nalType) bytes=\(packet.payload.count) marker=\(packet.marker)")
+        }
+        #endif
         guard packet.payloadType == videoPayloadType, packet.ssrc != selectedAudio else { throw Failure.unsupportedStream }
         // Tiled HEVC requires cross-SSRC decode ordering/compositing; do not silently
         // render only tile zero when the server ignores single-picture negotiation.
@@ -132,6 +153,13 @@ extension HighPerformancePlayback: HighPerformanceMediaOutput {}
         catch { videos[packet.ssrc] = state; loseVideoContinuity(); throw error }
         videos[packet.ssrc] = state
         guard let units else { return }
+        #if DEBUG
+        diagnosticVideoAUs += 1
+        if diagnosticVideoAUs <= 20 || diagnosticVideoAUs % 120 == 0 {
+            let types = units.map { Int(($0.first! >> 1) & 63) }.description
+            VNCControlDiagnostics.logger.notice("HP HEVC AU count=\(self.diagnosticVideoAUs) types=\(types, privacy: .public) needs_keyframe=\(self.needsKeyframe) playing=\(self.isPlaying)")
+        }
+        #endif
         let parameters = units.filter { (32...34).contains(Int(($0.first! >> 1) & 63)) }
         if !parameters.isEmpty { _ = try state.factory.hevcAccessUnit(parameters, presentationSeconds: 0) }
         let picture = units.filter { ($0.first! >> 1) & 63 < 32 }
@@ -186,6 +214,9 @@ extension HighPerformancePlayback: HighPerformanceMediaOutput {}
                   let start = clock.presentationSeconds(ssrc: video.ssrc, timestamp: video.timestamp) else { return }
             do {
                 try enqueuePending()
+                #if DEBUG
+                VNCControlDiagnostics.logger.notice("HP media starting clock pts=\(start)")
+                #endif
                 try output.start(at: start, playoutDelay: 0.08)
                 isPlaying = true
             } catch {
