@@ -286,6 +286,7 @@ private struct SessionView: View {
                             size: CGSize(width: session.screenWidth, height: session.screenHeight),
                             remoteCursor: session.remoteCursor,
                             playback: session.highPerformancePlayback,
+                            scrollSensitivity: scrollSensitivity,
                             onKey: { session.sendKey(keysym: $0, pressed: $1) },
                             onPointer: { point, mask in session.sendPointer(x: Int(point.x), y: Int(point.y), buttonMask: mask) })
                             .background(.black)
@@ -456,6 +457,7 @@ private struct RemoteDesktopSurface: UIViewRepresentable {
     let size: CGSize
     let remoteCursor: RFBCursorShape?
     let playback: HighPerformancePlayback?
+    let scrollSensitivity: RemoteScrollSensitivity
     let onKey: (UInt32, Bool) -> Void
     let onPointer: (CGPoint, UInt8) -> Void
     final class Coordinator {
