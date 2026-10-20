@@ -56,6 +56,15 @@ final class RemoteDesktopUIView: UIView {
         diagnosticCallbackCount += 1
         VNCControlDiagnostics.logger.notice("ui callback kind=\(kind, privacy: .public) count=\(self.diagnosticCallbackCount)")
     }
+    private func recordCompositionCallback(_ kind: String, text: String?) {
+        recordInputCallback(kind)
+        let utf16Length = text?.utf16.count ?? 0
+        let scalarCount = text?.unicodeScalars.count ?? 0
+        let asciiCount = text?.unicodeScalars.filter { $0.isASCII }.count ?? 0
+        let nonASCIICount = scalarCount - asciiCount
+        let language = textInputMode?.primaryLanguage ?? "unknown"
+        VNCControlDiagnostics.logger.notice("ui composition kind=\(kind, privacy: .public) utf16_length=\(utf16Length) ascii_scalars=\(asciiCount) nonascii_scalars=\(nonASCIICount) input_language=\(language, privacy: .public)")
+    }
     #endif
 
     var onKey: ((UInt32, Bool) -> Void)?
@@ -659,7 +668,7 @@ extension RemoteDesktopUIView: UITextInput {
 
     func insertText(_ text: String) {
         #if DEBUG
-        recordInputCallback("insertText")
+        recordCompositionCallback("insertText", text: text)
         #endif
         updateComposition(nil, selection: NSRange(location: 0, length: 0))
         sendText(text)
@@ -682,10 +691,16 @@ extension RemoteDesktopUIView: UITextInput {
     // MARK: Marked Text (IME Composition)
 
     func setMarkedText(_ markedText: String?, selectedRange: NSRange) {
+        #if DEBUG
+        recordCompositionCallback("setMarkedText", text: markedText)
+        #endif
         updateComposition(markedText, selection: selectedRange)
     }
 
     func unmarkText() {
+        #if DEBUG
+        recordCompositionCallback("unmarkText", text: _markedText)
+        #endif
         let text = _markedText
         updateComposition(nil, selection: NSRange(location: 0, length: 0))
         if let text, !text.isEmpty {
