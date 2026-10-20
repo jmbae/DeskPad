@@ -15,6 +15,11 @@ final class HighPerformanceSampleFactory {
     private var videoFormat: CMVideoFormatDescription?
     private var audioFormat: CMAudioFormatDescription?
 
+    var audioStreamDescription: AudioStreamBasicDescription? {
+        guard let audioFormat else { return nil }
+        return CMAudioFormatDescriptionGetStreamBasicDescription(audioFormat)?.pointee
+    }
+
     func reset() { sps = nil; pps = nil; videoFormat = nil; audioFormat = nil }
 
     /// Wraps MPEG-4 AudioSpecificConfig in an ESDS descriptor for CoreAudio's magic cookie API.
