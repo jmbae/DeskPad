@@ -73,3 +73,24 @@ approval persists the exact observed key hash before authentication continues.
 Use connection-generation identity so a late approval cannot trust a subsequent
 connection. Do not log DER or credentials. Pin trust must be revocable separately
 from password deletion. Password presence is not consent to trust an unseen key.
+
+## Server pin helper
+
+```sh
+swiftc -swift-version 6 DeskPad/AppleHPServerTrust.swift Tests/HPLifecycle/TrustHarness.swift -o /tmp/deskpad-hp-trust-test
+/tmp/deskpad-hp-trust-test
+```
+
+`AppleHPServerTrust.inspect(der:host:port:)` returns `.trusted` or
+`.approvalRequired(Challenge)`. The UI must display the challenge endpoint and
+fingerprint, then call `approve(challenge)` only for an explicit acceptance in
+the same live connection generation. On rejection/disconnect, call `cancel`.
+The helper rejects superseded challenges and changed stored keys, and writes
+pins through an insert-only Keychain operation to prevent competing approvals
+from overwriting one another. A changed key has no automatic approval path.
+
+The store is injected in the harness; tests do not modify the user's Keychain.
+DER must already have passed the authentication helper's RSA parser. Pins use a
+separate non-synchronizing, device-only Keychain service. Account is SHA-256 of
+normalized host plus port; value is SHA-256 of DER. Password records are untouched.
+No key material, credentials, or fingerprints are logged by the implementation.
