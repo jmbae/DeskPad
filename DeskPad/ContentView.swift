@@ -3,6 +3,7 @@ import UIKit
 import Observation
 
 struct ContentView: View {
+    @AppStorage(DeskPadConnectionMode.storageKey) private var storedConnectionMode = DeskPadConnectionMode.standard.rawValue
     @AppStorage("deskpadColorQuality") private var colorQuality = VNCColorQuality.lowLatency
     @AppStorage("deskpadScrollSensitivity") private var scrollSensitivity = RemoteScrollSensitivity.double
     @State private var store = ConnectionStore()
@@ -56,7 +57,9 @@ struct ContentView: View {
             .toolbar {
                 ToolbarItem(placement: .topBarTrailing) {
                     Menu {
-                        ColorQualityPicker(selection: $colorQuality)
+                        ConnectionModeSettings()
+                            ColorQualityPicker(selection: $colorQuality)
+                                .disabled(DeskPadConnectionMode.restored(from: storedConnectionMode).usesHighPerformance)
                         Divider()
                         ScrollSensitivityPicker(selection: $scrollSensitivity)
                     } label: {
@@ -251,6 +254,7 @@ private struct ConnectionEditor: View {
 }
 
 private struct SessionView: View {
+    @AppStorage(DeskPadConnectionMode.storageKey) private var storedConnectionMode = DeskPadConnectionMode.standard.rawValue
     @AppStorage("deskpadColorQuality") private var colorQuality = VNCColorQuality.lowLatency
     @AppStorage("deskpadScrollSensitivity") private var scrollSensitivity = RemoteScrollSensitivity.double
     @Environment(\.dismiss) private var dismiss
@@ -298,10 +302,10 @@ private struct SessionView: View {
                             Text(sessionDescription)
                         } actions: {
                             if session.state == .ended {
-                                Button("다시 연결") { session.connect(to: connection, password: password, colorQuality: colorQuality) }
+                                Button("다시 연결") { session.connect(to: connection, password: password, colorQuality: colorQuality, connectionMode: .restored(from: storedConnectionMode)) }
                                     .buttonStyle(.borderedProminent)
                             } else if case .failed = session.state {
-                                Button("다시 시도") { session.connect(to: connection, password: password, colorQuality: colorQuality) }
+                                Button("다시 시도") { session.connect(to: connection, password: password, colorQuality: colorQuality, connectionMode: .restored(from: storedConnectionMode)) }
                                     .buttonStyle(.borderedProminent)
                             }
                         }
@@ -348,7 +352,9 @@ private struct SessionView: View {
                             Text("클립보드는 Latin-1 문자, 최대 1 MiB를 지원합니다.")
                         } label: { Label("클립보드", systemImage: "doc.on.clipboard") }
                         Menu {
+                            ConnectionModeSettings()
                             ColorQualityPicker(selection: $colorQuality)
+                                .disabled(DeskPadConnectionMode.restored(from: storedConnectionMode).usesHighPerformance)
                             if session.usingCompatibleColor {
                                 Text("검은 화면을 감지해 호환 색상으로 연결했습니다. 전송량이 늘어날 수 있습니다.")
                             }
@@ -376,14 +382,18 @@ private struct SessionView: View {
             .task {
                 do {
                     password = try store.password(for: connection)
-                    session.connect(to: connection, password: password, colorQuality: colorQuality)
+                    session.connect(to: connection, password: password, colorQuality: colorQuality, connectionMode: .restored(from: storedConnectionMode))
                 } catch {
                     session.reportError("저장된 VNC 암호를 읽지 못했습니다: \(error.localizedDescription)")
                 }
             }
+            .onChange(of: storedConnectionMode) { _, _ in
+                keyboardController.dismiss()
+                session.connect(to: connection, password: password, colorQuality: colorQuality, connectionMode: .restored(from: storedConnectionMode))
+            }
             .onChange(of: colorQuality) { _, _ in
                 keyboardController.dismiss()
-                session.connect(to: connection, password: password, colorQuality: colorQuality)
+                session.connect(to: connection, password: password, colorQuality: colorQuality, connectionMode: .restored(from: storedConnectionMode))
             }
             .onChange(of: session.state) { _, newState in
                 switch newState {

@@ -134,7 +134,7 @@ final class VNCSessionModel {
     private var client: RFBClient?
     private var sessionTask: Task<Void, Never>?
 
-    func connect(to savedConnection: SavedConnection, password: String? = nil, colorQuality: VNCColorQuality = .fullColor) {
+    func connect(to savedConnection: SavedConnection, password: String? = nil, colorQuality: VNCColorQuality = .fullColor, connectionMode: DeskPadConnectionMode = .standard) {
         disconnect()
         let generation = self.generation
         let client = RFBClient(
@@ -143,6 +143,7 @@ final class VNCSessionModel {
             username: savedConnection.username,
             password: password,
             pixelFormat: colorQuality.pixelFormat,
+            connectionMode: connectionMode,
             model: self,
             generation: generation
         )
@@ -417,6 +418,7 @@ private actor RFBClient {
     private var hpCipher: AppleHPRecordCipher?
     private var hpDatagrams: AppleHPDatagramTransport?
     private var hpPresentationTask: Task<Void, Never>?
+    private let requestsHighPerformance: Bool
     private var usesHighPerformance = false
     private var hasFrame = false
     private var firstFrameTimeout: Task<Void, Never>?
@@ -429,12 +431,17 @@ private actor RFBClient {
     private let maximumPixels = RFBFramebufferLimits.maximumPixels
     private let responseTimeout: DispatchTimeInterval = .seconds(20)
 
-    init(host: String, port: UInt16, username: String, password: String?, pixelFormat: RFBPixelFormat, model: VNCSessionModel, generation: UUID) {
+    init(host: String, port: UInt16, username: String, password: String?, pixelFormat: RFBPixelFormat, connectionMode: DeskPadConnectionMode = .standard, model: VNCSessionModel, generation: UUID) {
         self.host = host
         self.port = port
         self.username = username
         self.password = password
         self.pixelFormat = pixelFormat
+        #if DEBUG
+        self.requestsHighPerformance = connectionMode.usesHighPerformance || ProcessInfo.processInfo.arguments.contains("--deskpad-hp-mirror")
+        #else
+        self.requestsHighPerformance = connectionMode.usesHighPerformance
+        #endif
         self.zrleDecoder = RFBZRLEDecoder(pixelFormat: pixelFormat)
         self.model = model
         self.generation = generation
@@ -458,11 +465,9 @@ private actor RFBClient {
         tcpOptions.noDelay = true
         let parameters = NWParameters(tls: nil, tcp: tcpOptions)
         var resolvedHost = host
-        #if DEBUG
-        if ProcessInfo.processInfo.arguments.contains("--deskpad-hp-mirror") {
+        if requestsHighPerformance {
             resolvedHost = try await AppleHPUDPSocket.resolveIPv4(host: host)
         }
-        #endif
         let connection = NWConnection(host: NWEndpoint.Host(resolvedHost), port: endpointPort, using: parameters)
         self.connection = connection
         try await start(connection)
@@ -478,6 +483,9 @@ private actor RFBClient {
             throw ClientError.invalidServerMessage("버전 문자열이 올바르지 않습니다.")
         }
         usesAppleExtensions = serverMinor == 889
+        guard !requestsHighPerformance || usesAppleExtensions else {
+            throw ClientError.invalidServerMessage("이 서버는 고성능 화면·소리 공유를 지원하지 않습니다.")
+        }
         let negotiatedMinor: UInt16 = usesAppleExtensions ? 889 : (serverMinor >= 8 ? 8 : (serverMinor >= 7 ? 7 : 3))
         let version = String(format: "RFB 003.%03d\n", negotiatedMinor)
         try await send(Data(version.utf8))
@@ -515,16 +523,14 @@ private actor RFBClient {
                 throw ClientError.serverRejected(reason)
             }
             let securityTypes = try await readExactly(securityCount)
-            #if DEBUG
-            if ProcessInfo.processInfo.arguments.contains("--deskpad-hp-mirror") {
+            if requestsHighPerformance {
                 guard usesAppleExtensions, securityTypes.contains(33), let password else {
                     throw ClientError.invalidServerMessage("고성능 실험 인증을 지원하지 않습니다.")
                 }
                 usesHighPerformance = true
-                try await probeHighPerformance(password: password)
+                try await connectHighPerformance(password: password)
                 return
             }
-            #endif
             if securityTypes.contains(30), !username.isEmpty, password != nil {
                 selectedSecurityType = 30
             } else if securityTypes.contains(2), password != nil {
@@ -611,9 +617,7 @@ private actor RFBClient {
         }
     }
 
-    #if DEBUG
-    // Isolated diagnostic launch flag: never enables an unfinished audio mode in releases.
-    private func probeHighPerformance(password: String) async throws {
+    private func connectHighPerformance(password: String) async throws {
         try AppleHPSessionLifecycle.validateDisplayPolicy(changesHostDisplay: false)
         let key = try await AppleHPAuthentication.authenticate(username: username, password: password,
             read: { count in try await self.readExactly(count) },
@@ -621,7 +625,9 @@ private actor RFBClient {
                 guard let model = self.model else { throw CancellationError() }
                 try await model.verifyHPServerKey(der, host: self.host, port: self.port, generation: self.generation)
             })
+        #if DEBUG
         VNCControlDiagnostics.logger.notice("HP probe RSA1 authentication accepted")
+        #endif
         armFirstFrameTimeout(seconds: 15)
         let bootstrap = try AppleHPMirrorHandshake(encodings: [1010, 1103, -223])
         try await send(bootstrap.clientInit)
@@ -630,7 +636,8 @@ private actor RFBClient {
         guard nameLength <= 4096 else { throw ClientError.invalidServerMessage("HP 서버 이름 길이 오류") }
         _ = try await readExactly(nameLength)
         for message in bootstrap.cleartextPrelude { try await send(message) }
-        let request = bootstrap.setEncodings
+        let subscription = try AppleHPCursorSubscription.messages(width: header.readUInt16(at: 0), height: header.readUInt16(at: 2))
+        let request = subscription[0]
         for _ in 0..<16 {
             let message = try await readExactly(1)[0]
             if message == 0x14 {
@@ -655,7 +662,9 @@ private actor RFBClient {
                     guard key.count == 16, payload.count == 36 else { throw ClientError.authenticationFailed }
                     let cipher = try AppleHPRecordCipher(wrapKey: key)
                     try cipher.installRekey(payload: payload)
+                    #if DEBUG
                     VNCControlDiagnostics.logger.notice("HP probe encrypted channel key received")
+                    #endif
                     let offer = try AppleHPMediaOffer.make(videoProfile: .hevcSinglePicture)
                     hpCipher = cipher
                     let playback = await HighPerformancePlayback()
@@ -678,10 +687,10 @@ private actor RFBClient {
                     try await send(bootstrap.encryptionReady)
                     try await send(cipher.encode(body: request))
                     try await send(cipher.encode(body: offer.message))
-                    var fbu = Data([3, 0, 0, 0, 0, 0])
-                    fbu.appendUInt16(header.readUInt16(at: 0)); fbu.appendUInt16(header.readUInt16(at: 2))
-                    try await send(cipher.encode(body: fbu))
+                    for message in subscription.dropFirst() { try await send(cipher.encode(body: message)) }
+                    #if DEBUG
                     VNCControlDiagnostics.logger.notice("HP native media offer sent")
+                    #endif
                     var parser = AppleHPControlParser()
                     while !Task.isCancelled {
                         let prefix = try await readExactly(2, timeoutEnabled: false)
@@ -703,7 +712,19 @@ private actor RFBClient {
                                     // ServerInit/DesktopSize coordinate space.
                                     try await media.accept(answer)
                                 case .rekey(let payload): try cipher.installRekey(payload: payload)
-                                case .rectangle(let encoding, _, _, let w, let h, _):
+                                case .rectangle(let encoding, let x, let y, let w, let h, let payload):
+                                    if encoding == 1104 {
+                                        guard payload.count >= 8 else { throw RFBCursorShape.DecodeError.invalidLength }
+                                        let cacheID = payload.readUInt32(at: 0)
+                                        let compressedLength = Int(payload.readUInt32(at: 4))
+                                        guard compressedLength == payload.count - 8 else { throw RFBCursorShape.DecodeError.invalidLength }
+                                        if let cursor = try appleCursorCache.decode(cacheID: cacheID,
+                                            compressed: Data(payload.dropFirst(8)), width: Int(w), height: Int(h),
+                                            hotspotX: Int(x), hotspotY: Int(y)) {
+                                            await model?.setCursor(cursor, generation: generation)
+                                        }
+                                        continue
+                                    }
                                     guard encoding == -223 else {
                                         throw ClientError.invalidServerMessage("미지원 고성능 화면 정보")
                                     }
@@ -726,7 +747,7 @@ private actor RFBClient {
         }
         throw ClientError.invalidServerMessage("HP 암호화 연결 응답 없음")
     }
-    #endif
+
 
     private func expireHighPerformanceMedia() {
         timeoutState.markExpired()

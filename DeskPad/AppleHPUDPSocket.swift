@@ -1,4 +1,5 @@
 import Foundation
+import os
 import Darwin
 
 /// Unconnected UDP avoids treating an early host ICMP-port-unreachable as a
@@ -48,7 +49,13 @@ final class AppleHPUDPSocket: @unchecked Sendable {
         let flags = fcntl(fd, F_GETFL)
         guard flags >= 0, fcntl(fd, F_SETFL, flags | O_NONBLOCK) == 0 else { throw Failure.system(errno) }
         var bufferSize: Int32 = 4 * 1024 * 1024
-        _ = setsockopt(fd, SOL_SOCKET, SO_RCVBUF, &bufferSize, socklen_t(MemoryLayout<Int32>.size))
+        let bufferStatus = setsockopt(fd, SOL_SOCKET, SO_RCVBUF, &bufferSize, socklen_t(MemoryLayout<Int32>.size))
+        #if DEBUG
+        var actualBuffer: Int32 = 0
+        var actualSize = socklen_t(MemoryLayout<Int32>.size)
+        _ = getsockopt(fd, SOL_SOCKET, SO_RCVBUF, &actualBuffer, &actualSize)
+        VNCControlDiagnostics.logger.notice("HP UDP receive buffer requested=4194304 actual=\(actualBuffer) status=\(bufferStatus)")
+        #endif
         var local = sockaddr_in()
         local.sin_len = UInt8(MemoryLayout<sockaddr_in>.size)
         local.sin_family = sa_family_t(AF_INET); local.sin_port = (localPort ?? port).bigEndian

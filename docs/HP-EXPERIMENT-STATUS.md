@@ -45,9 +45,11 @@ and both sender reports arrive. H.264 at this canvas produced no video packets;
 a separate local synthetic encoder probe also failed at 6016×3384 for H.264,
 while HEVC succeeded. This is supporting evidence, not a remote encoder log.
 
-Live first-frame acceptance still fails: the first HEVC aggregation packet is
-rejected and the 64-packet inbox drops part of the initial IDR burst. These are
-under repair. Six native simulator tests pass including displayed HEVC 4:2:0 and
+The first live remote desktop was visibly presented at 22:46 KST after fixing
+HEVC framing (this server omits DON) and replacing the 64-packet inbox with a
+queue bounded by both 8192 packets and 12 MiB. Automatic framing selection now
+requires a fully validated VPS/SPS/PPS aggregation packet. Remaining UDP loss
+requires periodic startup keyframe requests; no packet loss is concealed. Six native simulator tests pass including displayed HEVC 4:2:0 and
 4:4:4, but do not establish real-host playback. Non-silent remote audio,
 perceptual A/V sync, sustained playback, input and reconnect remain unverified.
 No display configuration command is sent. Local display measurements are not
