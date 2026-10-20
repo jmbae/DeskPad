@@ -276,11 +276,12 @@ private struct SessionView: View {
                             .padding(.vertical, 8)
                     }
                     if session.screenWidth > 0, session.screenHeight > 0,
-                       session.framebuffer.count == session.screenWidth * session.screenHeight * 4 {
+                       (session.highPerformancePlayback != nil || session.framebuffer.count == session.screenWidth * session.screenHeight * 4) {
                         RemoteDesktopSurface(controller: keyboardController, framebuffer: session.framebuffer,
                             framebufferRevision: session.framebufferRevision,
                             size: CGSize(width: session.screenWidth, height: session.screenHeight),
                             remoteCursor: session.remoteCursor,
+                            playback: session.highPerformancePlayback,
                             onKey: { session.sendKey(keysym: $0, pressed: $1) },
                             onPointer: { point, mask in session.sendPointer(x: Int(point.x), y: Int(point.y), buttonMask: mask) })
                             .background(.black)
@@ -440,6 +441,7 @@ private struct RemoteDesktopSurface: UIViewRepresentable {
     let framebufferRevision: UInt64
     let size: CGSize
     let remoteCursor: RFBCursorShape?
+    let playback: HighPerformancePlayback?
     let onKey: (UInt32, Bool) -> Void
     let onPointer: (CGPoint, UInt8) -> Void
     final class Coordinator {
@@ -458,6 +460,7 @@ private struct RemoteDesktopSurface: UIViewRepresentable {
             view.desktopImage = makeImage()
             context.coordinator.framebufferRevision = framebufferRevision
         }
+        view.videoLayer = playback?.videoLayer
         view.desktopSize = size
         view.remoteCursor = remoteCursor
         view.onKey = onKey
