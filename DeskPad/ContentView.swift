@@ -3,6 +3,7 @@ import UIKit
 import Observation
 
 struct ContentView: View {
+    @AppStorage("deskpadColorQuality") private var colorQuality = VNCColorQuality.lowLatency
     @State private var store = ConnectionStore()
     @State private var editingConnection: SavedConnection?
     @State private var isAddingConnection = false
@@ -52,6 +53,13 @@ struct ContentView: View {
             }
             .navigationTitle("DeskPad")
             .toolbar {
+                ToolbarItem(placement: .topBarTrailing) {
+                    Menu {
+                        ColorQualityPicker(selection: $colorQuality)
+                    } label: {
+                        Label("화질: \(colorQuality.title)", systemImage: "speedometer")
+                    }
+                }
                 ToolbarItem(placement: .topBarTrailing) {
                     Button {
                         isAddingConnection = true
@@ -240,6 +248,7 @@ private struct ConnectionEditor: View {
 }
 
 private struct SessionView: View {
+    @AppStorage("deskpadColorQuality") private var colorQuality = VNCColorQuality.lowLatency
     @Environment(\.dismiss) private var dismiss
     @State private var session = VNCSessionModel()
     @State private var keyboardController = RemoteKeyboardController()
@@ -280,10 +289,10 @@ private struct SessionView: View {
                             Text(sessionDescription)
                         } actions: {
                             if session.state == .ended {
-                                Button("다시 연결") { session.connect(to: connection, password: password) }
+                                Button("다시 연결") { session.connect(to: connection, password: password, colorQuality: colorQuality) }
                                     .buttonStyle(.borderedProminent)
                             } else if case .failed = session.state {
-                                Button("다시 시도") { session.connect(to: connection, password: password) }
+                                Button("다시 시도") { session.connect(to: connection, password: password, colorQuality: colorQuality) }
                                     .buttonStyle(.borderedProminent)
                             }
                         }
@@ -330,6 +339,9 @@ private struct SessionView: View {
                             Text("클립보드는 Latin-1 문자, 최대 1 MiB를 지원합니다.")
                         } label: { Label("클립보드", systemImage: "doc.on.clipboard") }
                         Menu {
+                            ColorQualityPicker(selection: $colorQuality)
+                            Text("화질을 바꾸면 다시 연결합니다.")
+                            Divider()
                             Button("화면에 맞추기") { keyboardController.inputView?.resetViewport() }
                             Button("실제 크기") { keyboardController.inputView?.actualSize() }
                             Button("확대 및 이동 초기화") { keyboardController.inputView?.resetViewport() }
@@ -345,10 +357,14 @@ private struct SessionView: View {
             .task {
                 do {
                     password = try store.password(for: connection)
-                    session.connect(to: connection, password: password)
+                    session.connect(to: connection, password: password, colorQuality: colorQuality)
                 } catch {
                     session.reportError("저장된 VNC 암호를 읽지 못했습니다: \(error.localizedDescription)")
                 }
+            }
+            .onChange(of: colorQuality) { _, _ in
+                keyboardController.dismiss()
+                session.connect(to: connection, password: password, colorQuality: colorQuality)
             }
             .onChange(of: session.state) { _, newState in
                 switch newState {
@@ -454,5 +470,35 @@ private struct RemoteDesktopSurface: UIViewRepresentable {
     static func dismantleUIView(_ view: RemoteDesktopUIView, coordinator: ()) {
         view.releaseAllKeys()
         _ = view.resignFirstResponder()
+    }
+}
+
+
+private struct ColorQualityPicker: View {
+    @Binding var selection: VNCColorQuality
+
+    var body: some View {
+        Picker("화질", selection: $selection) {
+            ForEach(VNCColorQuality.allCases, id: \.self) { quality in
+                Text(quality.title).tag(quality)
+            }
+        }
+        Text(selection.detail)
+    }
+}
+
+private extension VNCColorQuality {
+    var title: String {
+        switch self {
+        case .lowLatency: "속도 우선"
+        case .fullColor: "원본 색상"
+        }
+    }
+
+    var detail: String {
+        switch self {
+        case .lowLatency: "색상 정밀도를 낮춰 전송량과 지연을 줄입니다. 사진과 그라데이션 표현이 달라질 수 있습니다."
+        case .fullColor: "모든 색상을 유지합니다. 화면 변화가 크면 전송량이 늘어납니다."
+        }
     }
 }
