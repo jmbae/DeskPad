@@ -14,15 +14,22 @@ struct ContentView: View {
         NavigationStack {
             Group {
                 if store.connections.isEmpty {
-                    ContentUnavailableView {
-                        Label("연결이 없습니다", systemImage: "display")
-                    } description: {
-                        Text("VNC 서버를 추가해 원격 데스크톱에 연결하세요.")
-                    } actions: {
-                        Button("서버 추가", systemImage: "plus") {
-                            isAddingConnection = true
+                    VStack {
+                        if let error = store.loadError {
+                            Label(error, systemImage: "exclamationmark.triangle")
+                                .foregroundStyle(.orange)
+                                .padding()
                         }
-                        .buttonStyle(.borderedProminent)
+                        ContentUnavailableView {
+                            Label("연결이 없습니다", systemImage: "display")
+                        } description: {
+                            Text("VNC 서버를 추가해 원격 데스크톱에 연결하세요.")
+                        } actions: {
+                            Button("서버 추가", systemImage: "plus") {
+                                isAddingConnection = true
+                            }
+                            .buttonStyle(.borderedProminent)
+                        }
                     }
                 } else {
                     List {
@@ -55,10 +62,10 @@ struct ContentView: View {
                 }
             }
             .sheet(isPresented: $isAddingConnection) {
-                ConnectionEditor(store: store, connection: nil) { message = $0 }
+                ConnectionEditor(store: store, connection: nil)
             }
             .sheet(item: $editingConnection) { connection in
-                ConnectionEditor(store: store, connection: connection) { message = $0 }
+                ConnectionEditor(store: store, connection: connection)
             }
             .fullScreenCover(item: $connectingTo) { connection in
                 SessionView(connection: connection, store: store)
@@ -149,7 +156,7 @@ private struct ConnectionEditor: View {
     @Environment(\.dismiss) private var dismiss
     let store: ConnectionStore
     let connection: SavedConnection?
-    let report: (UserMessage) -> Void
+    @State private var message: UserMessage?
 
     @State private var name = ""
     @State private var host = ""
@@ -193,6 +200,9 @@ private struct ConnectionEditor: View {
                     Button("저장", action: save)
                 }
             }
+            .alert(item: $message) { item in
+                Alert(title: Text("DeskPad"), message: Text(item.text), dismissButton: .default(Text("확인")))
+            }
             .task {
                 guard let connection else { return }
                 name = connection.name
@@ -202,7 +212,7 @@ private struct ConnectionEditor: View {
                 do {
                     hasExistingPassword = try store.hasPassword(for: connection)
                 } catch {
-                    report(UserMessage(text: "Keychain 자격 증명을 확인하지 못했습니다: \(error.localizedDescription)"))
+                    message = UserMessage(text: "Keychain 자격 증명을 확인하지 못했습니다: \(error.localizedDescription)")
                 }
             }
         }
@@ -224,7 +234,7 @@ private struct ConnectionEditor: View {
             try store.save(saved, newPassword: password.isEmpty ? nil : password)
             dismiss()
         } catch {
-            report(UserMessage(text: "연결을 저장하지 못했습니다: \(error.localizedDescription)"))
+            message = UserMessage(text: "연결을 저장하지 못했습니다: \(error.localizedDescription)")
         }
     }
 }
@@ -233,7 +243,8 @@ private struct SessionView: View {
     @Environment(\.dismiss) private var dismiss
     @State private var session = VNCSessionModel()
     @State private var keyboardController = RemoteKeyboardController()
-    @State private var isDragging = false
+    @Environment(\.scenePhase) private var scenePhase
+    @State private var warning: UserMessage?
     @State private var password: String?
 
     let connection: SavedConnection
@@ -243,6 +254,10 @@ private struct SessionView: View {
         NavigationStack {
             ZStack(alignment: .topLeading) {
                 VStack(spacing: 0) {
+                    if let error = session.clipboardError {
+                        Label(error, systemImage: "doc.on.clipboard")
+                            .font(.footnote).foregroundStyle(.orange).padding(8)
+                    }
                     if case .failed = session.state {
                         Label(session.state.title, systemImage: "exclamationmark.triangle")
                             .font(.footnote)
@@ -252,29 +267,12 @@ private struct SessionView: View {
                             .padding(.vertical, 8)
                     }
                     if session.screenWidth > 0, let image = makeImage() {
-                        GeometryReader { geometry in
-                            ZStack {
-                                Color.black
-                                Image(decorative: image, scale: 1)
-                                    .resizable()
-                                    .aspectRatio(contentMode: .fit)
-                                    .frame(maxWidth: .infinity, maxHeight: .infinity)
-                                    .contentShape(Rectangle())
-                                    .gesture(
-                                        DragGesture(minimumDistance: 0)
-                                            .onChanged { value in
-                                                isDragging = true
-                                                sendPointer(at: value.location, in: geometry.size, pressed: true)
-                                            }
-                                            .onEnded { value in
-                                                sendPointer(at: value.location, in: geometry.size, pressed: false)
-                                                isDragging = false
-                                            }
-                                    )
-                                    .accessibilityLabel("원격 데스크톱 화면. 탭하거나 드래그해 포인터를 조작합니다.")
-                            }
-                        }
-                        .background(.black)
+                        RemoteDesktopSurface(controller: keyboardController, image: image,
+                            size: CGSize(width: session.screenWidth, height: session.screenHeight),
+                            onKey: { session.sendKey(keysym: $0, pressed: $1) },
+                            onPointer: { point, mask in session.sendPointer(x: Int(point.x), y: Int(point.y), buttonMask: mask) })
+                            .background(.black)
+                            .accessibilityLabel("원격 데스크톱. 두 손가락 스크롤, 세 손가락 화면 이동, 핀치 확대.")
                     } else {
                         ContentUnavailableView {
                             Label(session.state.title, systemImage: session.stateIcon)
@@ -289,12 +287,7 @@ private struct SessionView: View {
                         .frame(maxWidth: .infinity, maxHeight: .infinity)
                     }
                 }
-                RemoteKeyboardInput(controller: keyboardController) { key, pressed in
-                    session.sendKey(keysym: key, pressed: pressed)
-                }
-                .frame(width: 1, height: 1)
-                .opacity(0.01)
-                .accessibilityHidden(true)
+
             }
             .ignoresSafeArea(.keyboard)
             .navigationTitle(connection.displayName)
@@ -302,11 +295,12 @@ private struct SessionView: View {
             .toolbar {
                 ToolbarItem(placement: .topBarLeading) {
                     Button("닫기") {
+                        keyboardController.dismiss()
                         session.disconnect()
                         dismiss()
                     }
                 }
-                ToolbarItem(placement: .topBarTrailing) {
+                ToolbarItemGroup(placement: .topBarTrailing) {
                     if case .connected = session.state {
                         Button {
                             if keyboardController.isFocused {
@@ -323,6 +317,22 @@ private struct SessionView: View {
                             )
                         }
                         .accessibilityHint("Mac에 문자와 키 입력을 보냅니다.")
+                        Menu {
+                            PasteButton(payloadType: String.self) { strings in
+                                if let text = strings.first { session.sendClipboard(text: text) }
+                            }
+                            Button("원격 클립보드 복사") {
+                                if let text = session.receivedClipboard { UIPasteboard.general.string = text }
+                            }.disabled(session.receivedClipboard == nil)
+                            Text("클립보드는 Latin-1 문자, 최대 1 MiB를 지원합니다.")
+                        } label: { Label("클립보드", systemImage: "doc.on.clipboard") }
+                        Menu {
+                            Button("화면에 맞추기") { keyboardController.inputView?.resetViewport() }
+                            Button("실제 크기") { keyboardController.inputView?.actualSize() }
+                            Button("확대 및 이동 초기화") { keyboardController.inputView?.resetViewport() }
+                            Text("핀치 확대 · 세 손가락 화면 이동")
+                            Text("두 손가락 스크롤 · 두 손가락 탭 오른쪽 클릭")
+                        } label: { Label("화면 보기", systemImage: "arrow.up.left.and.arrow.down.right") }
                         Text("\(session.screenWidth) × \(session.screenHeight)")
                             .font(.caption.monospacedDigit())
                             .foregroundStyle(.secondary)
@@ -342,9 +352,15 @@ private struct SessionView: View {
                     do {
                         try store.markConnected(connection)
                     } catch {
-                        session.reportError("화면은 연결됐지만 최근 연결 시각을 저장하지 못했습니다: \(error.localizedDescription)")
+                        warning = UserMessage(text: "화면은 연결됐지만 최근 연결 시각을 저장하지 못했습니다: \(error.localizedDescription)")
                     }
                 }
+            }
+            .alert(item: $warning) { item in
+                Alert(title: Text("DeskPad"), message: Text(item.text), dismissButton: .default(Text("확인")))
+            }
+            .onChange(of: scenePhase) { _, phase in
+                if phase != .active { keyboardController.dismiss(); keyboardController.inputView?.releaseAllKeys() }
             }
             .onDisappear {
                 keyboardController.dismiss()
@@ -360,18 +376,6 @@ private struct SessionView: View {
         case .connected: "첫 번째 화면 업데이트를 기다리고 있습니다."
         case .disconnected: "연결이 종료되었습니다."
         }
-    }
-
-    private func sendPointer(at location: CGPoint, in size: CGSize, pressed: Bool) {
-        guard size.width > 0, size.height > 0, session.screenWidth > 0, session.screenHeight > 0 else { return }
-        let scale = min(size.width / CGFloat(session.screenWidth), size.height / CGFloat(session.screenHeight))
-        let displayedWidth = CGFloat(session.screenWidth) * scale
-        let displayedHeight = CGFloat(session.screenHeight) * scale
-        let offsetX = (size.width - displayedWidth) / 2
-        let offsetY = (size.height - displayedHeight) / 2
-        let x = Int((location.x - offsetX) / scale)
-        let y = Int((location.y - offsetY) / scale)
-        session.sendPointer(x: x, y: y, buttonMask: pressed ? 1 : 0)
     }
 
     private func makeImage() -> CGImage? {
@@ -404,9 +408,6 @@ private extension VNCSessionModel {
         }
     }
 
-    func reportError(_ message: String) {
-        setState(.failed(message))
-    }
 }
 
 private struct UserMessage: Identifiable {
@@ -417,150 +418,33 @@ private struct UserMessage: Identifiable {
 @Observable
 @MainActor
 private final class RemoteKeyboardController {
-    fileprivate weak var inputView: RemoteKeyboardInputView?
+    fileprivate weak var inputView: RemoteDesktopUIView?
     fileprivate var isFocused = false
-
-    func focus() {
-        _ = inputView?.becomeFirstResponder()
-    }
-
-    func dismiss() {
-        _ = inputView?.resignFirstResponder()
-    }
+    func focus() { inputView?.toggleVirtualKeyboard() }
+    func dismiss() { _ = inputView?.resignFirstResponder() }
 }
 
-private struct RemoteKeyboardInput: UIViewRepresentable {
+private struct RemoteDesktopSurface: UIViewRepresentable {
     let controller: RemoteKeyboardController
-    let sendKey: (UInt32, Bool) -> Void
-
-    func makeUIView(context: Context) -> RemoteKeyboardInputView {
-        let view = RemoteKeyboardInputView()
-        view.onKey = sendKey
-        view.onFocusChanged = { [weak controller] isFocused in
-            controller?.isFocused = isFocused
-        }
-        controller.inputView = view
+    let image: CGImage
+    let size: CGSize
+    let onKey: (UInt32, Bool) -> Void
+    let onPointer: (CGPoint, UInt8) -> Void
+    func makeUIView(context: Context) -> RemoteDesktopUIView {
+        let view = RemoteDesktopUIView()
+        view.onFocusChanged = { [weak controller] in controller?.isFocused = $0 }
+        updateUIView(view, context: context)
         return view
     }
-
-    func updateUIView(_ uiView: RemoteKeyboardInputView, context: Context) {
-        uiView.onKey = sendKey
-        controller.inputView = uiView
+    func updateUIView(_ view: RemoteDesktopUIView, context: Context) {
+        view.desktopImage = image
+        view.desktopSize = size
+        view.onKey = onKey
+        view.onPointer = onPointer
+        controller.inputView = view
     }
-}
-
-@MainActor
-private final class RemoteKeyboardInputView: UIView, UIKeyInput {
-    var onKey: ((UInt32, Bool) -> Void)?
-    var onFocusChanged: ((Bool) -> Void)?
-    private var pressedKeys: [UIKeyboardHIDUsage: UInt32] = [:]
-
-    override var canBecomeFirstResponder: Bool { true }
-    var hasText: Bool { false }
-    var autocapitalizationType: UITextAutocapitalizationType = .none
-    var autocorrectionType: UITextAutocorrectionType = .no
-    var spellCheckingType: UITextSpellCheckingType = .no
-    var keyboardType: UIKeyboardType = .default
-    var returnKeyType: UIReturnKeyType = .default
-
-    override func becomeFirstResponder() -> Bool {
-        let becameFirstResponder = super.becomeFirstResponder()
-        if becameFirstResponder {
-            onFocusChanged?(true)
-        }
-        return becameFirstResponder
-    }
-
-    override func resignFirstResponder() -> Bool {
-        let resigned = super.resignFirstResponder()
-        if resigned {
-            onFocusChanged?(false)
-        }
-        return resigned
-    }
-
-    func insertText(_ text: String) {
-        for scalar in text.unicodeScalars {
-            let value = scalar.value
-            let keysym = value <= 0xff ? value : 0x0100_0000 | value
-            onKey?(keysym, true)
-            onKey?(keysym, false)
-        }
-    }
-
-    func deleteBackward() {
-        onKey?(0xff08, true)
-        onKey?(0xff08, false)
-    }
-
-    override func pressesBegan(_ presses: Set<UIPress>, with event: UIPressesEvent?) {
-        let handled = presses.compactMap { press -> (UIKeyboardHIDUsage, UInt32)? in
-            guard let keyCode = press.key?.keyCode, let keysym = Self.keysym(for: keyCode) else { return nil }
-            return (keyCode, keysym)
-        }
-        guard !handled.isEmpty else {
-            super.pressesBegan(presses, with: event)
-            return
-        }
-        for (keyCode, keysym) in handled {
-            pressedKeys[keyCode] = keysym
-            onKey?(keysym, true)
-        }
-    }
-
-    override func pressesEnded(_ presses: Set<UIPress>, with event: UIPressesEvent?) {
-        let handled = presses.compactMap { press -> UIKeyboardHIDUsage? in
-            guard let keyCode = press.key?.keyCode, pressedKeys[keyCode] != nil else { return nil }
-            return keyCode
-        }
-        guard !handled.isEmpty else {
-            super.pressesEnded(presses, with: event)
-            return
-        }
-        for keyCode in handled {
-            if let keysym = pressedKeys.removeValue(forKey: keyCode) {
-                onKey?(keysym, false)
-            }
-        }
-    }
-
-    override func pressesCancelled(_ presses: Set<UIPress>, with event: UIPressesEvent?) {
-        for press in presses {
-            guard let keyCode = press.key?.keyCode,
-                  let keysym = pressedKeys.removeValue(forKey: keyCode) else { continue }
-            onKey?(keysym, false)
-        }
-        super.pressesCancelled(presses, with: event)
-    }
-
-    private static func keysym(for keyCode: UIKeyboardHIDUsage) -> UInt32? {
-        switch keyCode {
-        case .keyboardReturnOrEnter: 0xff0d
-        case .keypadEnter: 0xff8d
-        case .keyboardTab: 0xff09
-        case .keyboardEscape: 0xff1b
-        case .keyboardDeleteOrBackspace: 0xff08
-        case .keyboardHome: 0xff50
-        case .keyboardEnd: 0xff57
-        case .keyboardPageUp: 0xff55
-        case .keyboardPageDown: 0xff56
-        case .keyboardLeftArrow: 0xff51
-        case .keyboardUpArrow: 0xff52
-        case .keyboardRightArrow: 0xff53
-        case .keyboardDownArrow: 0xff54
-        case .keyboardF1: 0xffbe
-        case .keyboardF2: 0xffbf
-        case .keyboardF3: 0xffc0
-        case .keyboardF4: 0xffc1
-        case .keyboardF5: 0xffc2
-        case .keyboardF6: 0xffc3
-        case .keyboardF7: 0xffc4
-        case .keyboardF8: 0xffc5
-        case .keyboardF9: 0xffc6
-        case .keyboardF10: 0xffc7
-        case .keyboardF11: 0xffc8
-        case .keyboardF12: 0xffc9
-        default: nil
-        }
+    static func dismantleUIView(_ view: RemoteDesktopUIView, coordinator: ()) {
+        view.releaseAllKeys()
+        _ = view.resignFirstResponder()
     }
 }
