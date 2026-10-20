@@ -21,3 +21,11 @@ Server termination cases cover clean EOF while connected, a TCP reset, and EOF m
 The TCP suite now verifies preferred ZRLE negotiation, persistent rectangles, malformed ZRLE bounds/length/palette/bomb rejection, and a fixed stalled-payload timeout. Raw remains advertised and all original Raw tests run. ZRLE uses a single persistent zlib stream per connection, 64×64 tiles, and three-byte BGR CPIXELs for the client's negotiated pixel format. The [RFB protocol specification](https://github.com/rfbproto/rfbproto/blob/master/rfbproto.rst#zrle-encoding) and [RFC 6143](https://datatracker.ietf.org/doc/html/rfc6143) define the format. Real Mac support is established by observing encoding 16 on that server, not assumed from the standard.
 
 Compressed receive length is bounded by rectangle size and a 128 MiB absolute limit. Inflated bytes are bounded by the worst legal tile payload, and decode checks the same fixed receive deadline during inflate and tile processing. No progress or repeated message renews a payload budget. DEBUG logs include only sizes, rectangle counts, and receive/decode/update timings.
+
+## Input latency and ordering
+
+Run `Tests/Session/run-input-queue.sh` for deterministic suspended-transport tests.
+A 4,000-movement burst must retain only the latest pending motion between button
+edges, keys, clipboard commands and wheel events. The harness also checks that
+cancellation removes pending input, an old suspended sender cannot drain a new
+session, and a suspended send does not retain the queue owner.
