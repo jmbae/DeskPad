@@ -4,7 +4,7 @@ import zlib
 
 /// Wire offer for the experimental single-picture H.264 / AAC-ELD profile.
 /// No connection, display change, or media playback occurs in this builder.
-struct AppleHPMediaOffer {
+nonisolated struct AppleHPMediaOffer {
     struct StreamKeys {
         let viewerToServer: Data
         let serverToViewer: Data

@@ -5,7 +5,7 @@ import CommonCrypto
 /// this is not a general-purpose authenticated encryption construction.
 /// Confine an instance to one serial executor. A framing/integrity error poisons
 /// the instance; callers must close the connection rather than retry decoding.
-final class AppleHPRecordCipher {
+nonisolated final class AppleHPRecordCipher {
     enum Failure: Error {
         case invalidKey, invalidRekey, inactive, failed, invalidLength
         case integrity, crypto, sequenceExhausted, rekeyDuringRecord

@@ -3,7 +3,7 @@ import Darwin
 
 /// Unconnected UDP avoids treating an early host ICMP-port-unreachable as a
 /// permanent media-connection failure. Descriptor ownership stays on one queue.
-final class AppleHPUDPSocket: @unchecked Sendable {
+nonisolated final class AppleHPUDPSocket: @unchecked Sendable {
     enum Failure: Error { case resolve(Int32), invalidAddress, system(Int32) }
     private let queue = DispatchQueue(label: "DeskPad.HPUDP")
     private let queueKey = DispatchSpecificKey<UInt8>()

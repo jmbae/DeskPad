@@ -150,7 +150,10 @@ final class VNCSessionModel {
     }
 
     func disconnect() {
-        highPerformancePlayback?.reset(); highPerformancePlayback = nil
+        if let highPerformancePlayback {
+            Task { await highPerformancePlayback.reset() }
+            self.highPerformancePlayback = nil
+        }
         generation = UUID()
         sessionTask?.cancel()
         sessionTask = nil

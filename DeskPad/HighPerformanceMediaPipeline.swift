@@ -5,7 +5,7 @@ import CoreMedia
     func start(at senderSeconds: Double, playoutDelay: Double) throws
     func enqueueVideo(_ sample: CMSampleBuffer) throws
     func enqueueAudio(_ sample: CMSampleBuffer) throws
-    func reset()
+    func reset() async
 }
 extension HighPerformancePlayback: HighPerformanceMediaOutput {}
 
@@ -54,7 +54,7 @@ extension HighPerformancePlayback: HighPerformanceMediaOutput {}
     }
 
     /// Pass the negotiated clock rate for these SSRCs, not a rate inferred from arrival.
-    func observe(_ reports: [HighPerformanceSenderReport], clockRate: Double) throws {
+    func observe(_ reports: [HighPerformanceSenderReport], clockRate: Double) async throws {
         guard clockRate == videoRate || clockRate == audioRate else { throw Failure.unsupportedStream }
         for report in reports {
             if report.ssrc == selectedVideo && clockRate != videoRate { throw Failure.unsupportedStream }
@@ -62,12 +62,12 @@ extension HighPerformancePlayback: HighPerformanceMediaOutput {}
             do { try clock.observe(report, clockRate: clockRate) }
             catch HighPerformanceMediaError.staleSenderReport { continue }
         }
-        try drain()
+        try await drain()
     }
 
     /// The caller must reorder a bounded packet window before feeding fragmented video.
     /// This does not composite Apple's multi-SSRC tiled HEVC mode.
-    func consumeVideo(_ packet: HighPerformanceRTPPacket) throws {
+    func consumeVideo(_ packet: HighPerformanceRTPPacket) async throws {
         guard packet.payloadType == videoPayloadType, packet.ssrc != selectedAudio else { throw Failure.unsupportedStream }
         if videos[packet.ssrc] == nil {
             guard videos.count < 4 else { throw Failure.tooManyStreams }
@@ -109,12 +109,12 @@ extension HighPerformancePlayback: HighPerformanceMediaOutput {}
             }
             pendingVideo.append(PendingVideo(ssrc: packet.ssrc, timestamp: timestamp, annexB: annexB(units), keyframe: keyframe))
         }
-        try drain()
+        try await drain()
     }
 
     /// Feed exactly one raw AAC access unit, after removing any Apple/RTP AU wrapper.
     /// This API intentionally does not guess audio payload framing from its contents.
-    func consumeAudioAccessUnit(_ packet: HighPerformanceRTPPacket) throws {
+    func consumeAudioAccessUnit(_ packet: HighPerformanceRTPPacket) async throws {
         guard packet.payloadType == 101, packet.ssrc != selectedVideo, !packet.payload.isEmpty, packet.payload.count <= 65535 else { throw Failure.unsupportedStream }
         if let selectedAudio, selectedAudio != packet.ssrc { throw Failure.unsupportedStream }
         selectedAudio = packet.ssrc
@@ -126,12 +126,12 @@ extension HighPerformancePlayback: HighPerformanceMediaOutput {}
               Int32(bitPattern: last.timestamp &- first.timestamp) > Int32(audioRate * 0.2) - Int32(audioFrames) {
             pendingAudio.removeFirst()
         }
-        try drain()
+        try await drain()
     }
 
     /// Fresh session only; the SRTP receiver must also be replaced with freshly negotiated keys.
-    func reset() {
-        output.reset(); clock.reset(); videos.removeAll(); pendingVideo.removeAll(); pendingAudio.removeAll()
+    func reset() async {
+        await output.reset(); clock.reset(); videos.removeAll(); pendingVideo.removeAll(); pendingAudio.removeAll()
         selectedVideo = nil; selectedAudio = nil; needsKeyframe = true; isPlaying = false
         // Keep the successfully negotiated audio format; it carries no session time/key state.
     }
@@ -140,7 +140,7 @@ extension HighPerformancePlayback: HighPerformanceMediaOutput {}
         pendingVideo.removeAll(); needsKeyframe = true; onNeedsKeyframe?()
     }
 
-    private func drain() throws {
+    private func drain() async throws {
         if !isPlaying {
             guard let video = pendingVideo.first, let audio = pendingAudio.first,
                   let videoPTS = clock.presentationSeconds(ssrc: video.ssrc, timestamp: video.timestamp),
@@ -162,7 +162,7 @@ extension HighPerformancePlayback: HighPerformanceMediaOutput {}
                 try output.start(at: start, playoutDelay: 0.08)
                 isPlaying = true
             } catch {
-                output.reset(); pendingAudio.removeAll(); loseVideoContinuity()
+                await output.reset(); pendingAudio.removeAll(); loseVideoContinuity()
                 throw error
             }
         } else { try enqueuePending() }

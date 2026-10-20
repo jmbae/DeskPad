@@ -126,13 +126,21 @@ final class HighPerformanceSampleFactory {
 /// Native audio and video share one playback clock. Call start only after both
 /// streams have SR-derived timestamps and initial samples. Call reset on reconnect.
 @MainActor final class HighPerformancePlayback {
-    let videoLayer = AVSampleBufferDisplayLayer()
-    private let audioRenderer = AVSampleBufferAudioRenderer()
-    private let synchronizer = AVSampleBufferRenderSynchronizer()
+    let videoLayer: AVSampleBufferDisplayLayer
+    private let audioRenderer: AVSampleBufferAudioRenderer
+    private let synchronizer: AVSampleBufferRenderSynchronizer
+    private let videoReceiver: AVSampleBufferVideoRenderer.Receiver
+    private let audioReceiver: AVSampleBufferAudioRenderer.Receiver
 
     init() {
-        synchronizer.addRenderer(videoLayer.sampleBufferRenderer)
-        synchronizer.addRenderer(audioRenderer)
+        let videoLayer = AVSampleBufferDisplayLayer()
+        let audioRenderer = AVSampleBufferAudioRenderer()
+        let synchronizer = AVSampleBufferRenderSynchronizer()
+        self.videoLayer = videoLayer
+        self.audioRenderer = audioRenderer
+        self.synchronizer = synchronizer
+        videoReceiver = synchronizer.sampleBufferReceiver(adding: videoLayer.sampleBufferRenderer)
+        audioReceiver = synchronizer.sampleBufferReceiver(adding: audioRenderer)
     }
 
     func start(at senderSeconds: Double, playoutDelay: Double = 0.08) throws {
@@ -146,21 +154,41 @@ final class HighPerformanceSampleFactory {
     }
 
     func enqueueVideo(_ sample: CMSampleBuffer) throws {
-        guard videoLayer.sampleBufferRenderer.status != .failed else { throw HighPerformancePlaybackError.rendererFailed }
-        guard videoLayer.sampleBufferRenderer.isReadyForMoreMediaData else { throw HighPerformancePlaybackError.backpressure }
-        videoLayer.sampleBufferRenderer.enqueue(sample)
+        let readySample = CMReadySampleBuffer<CMSampleBuffer.DynamicContent>(unsafeBuffer: sample)
+        switch videoReceiver.enqueueImmediately(readySample) {
+        case .enqueued:
+            break
+        case .enqueuedWithDecodeFailures(_):
+            throw HighPerformancePlaybackError.rendererFailed
+        case .cancelledDueToFlush:
+            throw HighPerformancePlaybackError.backpressure
+        case .cancelledDueToFlushRequiredToResume(_), .cancelledDueToError(_):
+            throw HighPerformancePlaybackError.rendererFailed
+        @unknown default:
+            throw HighPerformancePlaybackError.rendererFailed
+        }
     }
 
     func enqueueAudio(_ sample: CMSampleBuffer) throws {
-        guard audioRenderer.status != .failed else { throw HighPerformancePlaybackError.rendererFailed }
-        guard audioRenderer.isReadyForMoreMediaData else { throw HighPerformancePlaybackError.backpressure }
-        audioRenderer.enqueue(sample)
+        let readySample = CMReadySampleBuffer<CMSampleBuffer.DynamicContent>(unsafeBuffer: sample)
+        switch audioReceiver.enqueueImmediately(readySample) {
+        case .enqueued:
+            break
+        case .enqueuedWithSuggestedFlush(_):
+            throw HighPerformancePlaybackError.rendererFailed
+        case .cancelledDueToFlush:
+            throw HighPerformancePlaybackError.backpressure
+        case .cancelledDueToError(_):
+            throw HighPerformancePlaybackError.rendererFailed
+        @unknown default:
+            throw HighPerformancePlaybackError.rendererFailed
+        }
     }
 
-    func reset() {
+    func reset() async {
         synchronizer.setRate(0, time: .zero)
-        videoLayer.sampleBufferRenderer.flush(removingDisplayedImage: true)
-        audioRenderer.flush()
+        await videoReceiver.flush(removingDisplayedImage: true)
+        audioReceiver.flush()
     }
 }
 
