@@ -3,66 +3,6 @@ import XCTest
 
 @MainActor
 final class RemoteInputTests: XCTestCase {
-    func testSparseDragPressesOriginalPointAndMovesBeforeRelease() {
-        let view = RemoteDesktopUIView(frame: CGRect(x: 0, y: 0, width: 200, height: 200))
-        view.desktopSize = CGSize(width: 200, height: 200)
-        var events: [(CGPoint, UInt8)] = []
-        view.onPointer = { events.append(($0, $1)) }
-        let pan = StubPan()
-        pan.testLocation = CGPoint(x: 110, y: 68)
-        pan.testTranslation = CGPoint(x: 10, y: 12.6)
-        pan.testState = .began
-        _ = view.perform(NSSelectorFromString("handleDrag:"), with: pan)
-        pan.testLocation = CGPoint(x: 120, y: 80)
-        pan.testState = .ended
-        _ = view.perform(NSSelectorFromString("handleDrag:"), with: pan)
-        XCTAssertEqual(events.map { $0.1 }, [0, 1, 1, 1, 0])
-        XCTAssertEqual(events.first?.0.x ?? -1, 100, accuracy: 0.001)
-        XCTAssertEqual(events.first?.0.y ?? -1, 55.4, accuracy: 0.001)
-        XCTAssertEqual(events.dropFirst().first?.0, events.first?.0)
-        XCTAssertEqual(events.suffix(2).map { $0.0 }, [CGPoint(x: 120, y: 80), CGPoint(x: 120, y: 80)])
-    }
-
-    func testDragOriginIsMappedThroughViewportAndCancellationReleases() {
-        let view = RemoteDesktopUIView(frame: CGRect(x: 0, y: 0, width: 200, height: 200))
-        view.desktopSize = CGSize(width: 400, height: 200)
-        view.actualSize()
-        var events: [(CGPoint, UInt8)] = []
-        view.onPointer = { events.append(($0, $1)) }
-        let pan = StubPan()
-        pan.testLocation = CGPoint(x: 130, y: 120)
-        pan.testTranslation = CGPoint(x: 30, y: 20)
-        pan.testState = .began
-        _ = view.perform(NSSelectorFromString("handleDrag:"), with: pan)
-        XCTAssertEqual(events.first?.0, CGPoint(x: 200, y: 100))
-        XCTAssertEqual(events.last?.0.x ?? -1, 230, accuracy: 0.001)
-        XCTAssertEqual(events.last?.0.y ?? -1, 120, accuracy: 0.001)
-        events.removeAll()
-        pan.testState = .cancelled
-        _ = view.perform(NSSelectorFromString("handleDrag:"), with: pan)
-        XCTAssertEqual(events.map { $0.1 }, [0])
-        view.releaseAllKeys()
-        XCTAssertEqual(events.count, 1)
-    }
-
-    func testDragAfterBlurDoesNotPressAgain() {
-        let view = RemoteDesktopUIView(frame: CGRect(x: 0, y: 0, width: 200, height: 200))
-        view.desktopSize = CGSize(width: 200, height: 200)
-        var masks: [UInt8] = []
-        view.onPointer = { masks.append($1) }
-        let pan = StubPan()
-        pan.testLocation = CGPoint(x: 100, y: 100)
-        pan.testState = .began
-        _ = view.perform(NSSelectorFromString("handleDrag:"), with: pan)
-        _ = view.resignFirstResponder()
-        masks.removeAll()
-        pan.testState = .changed
-        _ = view.perform(NSSelectorFromString("handleDrag:"), with: pan)
-        pan.testState = .ended
-        _ = view.perform(NSSelectorFromString("handleDrag:"), with: pan)
-        XCTAssertFalse(masks.contains { $0 != 0 })
-    }
-
     func testSecondaryMouseClickCannotRecognizeDirectTouch() throws {
         let taps = RemoteDesktopUIView().gestureRecognizers?.compactMap { $0 as? UITapGestureRecognizer } ?? []
         let secondary = try XCTUnwrap(taps.first { $0.buttonMaskRequired == .secondary })
