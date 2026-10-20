@@ -28,3 +28,38 @@ var rtcpFresh=try HighPerformanceSRTCPReceiver(masterKeyBlob:blob)
 for i in control[0].indices { var bad=control[0]; bad[i] ^= 1; do { _=try rtcpFresh.receive(bad); fatalError("RTCP tamper accepted") } catch {} }
 let valid=try rtcpFresh.receive(control[0]); check(valid.count == 28,"RTCP tamper poisoned state")
 print("SRTCP: encrypted and authenticated-only SR, reorder, replay and all-byte tampering passed")
+let outbound = try HighPerformanceSRTPSender(masterKeyBlob: blob, ssrc: 0x12345678, initialSequence: 65534)
+let sentFirst = try outbound.protect(payload: expected, payloadType: 100, timestamp: 90000)
+check(sentFirst == packets[0], "sender independent OpenSSL vector")
+let sentSecond = try outbound.protect(payload: expected, payloadType: 100, timestamp: 90000)
+check(sentSecond == packets[2], "sender sequence increments")
+let sentWrapped = try outbound.protect(payload: expected, payloadType: 100, timestamp: 90000)
+check(sentWrapped == packets[1], "sender rollover counter")
+var outboundReceiver = try HighPerformanceSRTPReceiver(masterKeyBlob: blob)
+for packet in [sentFirst, sentSecond, sentWrapped] {
+    let decoded = try outboundReceiver.receive(packet)
+    check(decoded.payload == expected, "sender receiver roundtrip")
+}
+let heartbeatSender = try HighPerformanceSRTPSender(masterKeyBlob: blob, ssrc: 99)
+let heartbeat = try heartbeatSender.protect(payload: hex("00683400"), payloadType: 101, timestamp: 0)
+var heartbeatReceiver = try HighPerformanceSRTPReceiver(masterKeyBlob: blob)
+let heartbeatPlain = try heartbeatReceiver.receive(heartbeat)
+check(heartbeatPlain.payload == hex("00683400") && heartbeatPlain.payloadType == 101, "audio heartbeat")
+let outboundControl = try HighPerformanceSRTCPSender(masterKeyBlob: blob, ssrc: 0x12345678, initialIndex: 10)
+let sr = hex("80c8000612345678000000640000000000015f90000000010000001c")
+let protectedSR = try outboundControl.protect(sr)
+check(protectedSR == control[0], "SRTCP sender independent OpenSSL vector")
+let rrSender = try HighPerformanceSRTCPSender(masterKeyBlob: blob, ssrc: 99)
+let rr = hex("80c9000100000063")
+var rrReceiver = try HighPerformanceSRTCPReceiver(masterKeyBlob: blob)
+for _ in 0..<3 {
+    let encodedRR = try rrSender.protect(rr)
+    let decodedRR = try rrReceiver.receive(encodedRR)
+    check(decodedRR == rr, "receiver report roundtrip")
+}
+let exhaustedControl = try HighPerformanceSRTCPSender(masterKeyBlob: blob, ssrc: 99, initialIndex: 0x7fff_ffff)
+_ = try exhaustedControl.protect(rr)
+do { _ = try exhaustedControl.protect(rr); fatalError("SRTCP index reused") } catch {}
+do { _ = try rrSender.protect(sr); fatalError("wrong sender SSRC accepted") } catch {}
+do { _ = try heartbeatSender.protect(payload: Data(), payloadType: 128, timestamp: 0); fatalError("invalid PT accepted") } catch {}
+print("SRTP/SRTCP sender: independent vectors, rollover, heartbeat, RR roundtrip, exhaustion passed")

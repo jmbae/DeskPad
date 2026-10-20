@@ -180,3 +180,83 @@ struct HighPerformanceSRTCPReceiver {
         return plain
     }
 }
+
+/// Single-stream sender. Create with a fresh client-send 46-byte master key for
+/// each media session. Reference semantics prevent accidental sequence cloning.
+/// Actor/queue-confined; never reuse a key and SSRC after discarding this object.
+final class HighPerformanceSRTPSender {
+    private let keys: HighPerformanceSRTPKeys
+    let ssrc: UInt32
+    private var index: UInt64
+    private var sent: UInt64 = 0
+
+    init(masterKeyBlob: Data, ssrc: UInt32, initialSequence: UInt16 = 0) throws {
+        keys = try HighPerformanceSRTPKeys(masterKeyBlob: masterKeyBlob)
+        self.ssrc = ssrc
+        index = UInt64(initialSequence)
+    }
+
+    /// Timestamp is an RTP media-clock value supplied by the caller, never a
+    /// wall-clock timestamp. This codec performs no logging.
+    func protect(payload: Data, payloadType: UInt8, timestamp: UInt32, marker: Bool = false) throws -> Data {
+        guard payloadType < 128, payload.count <= 65535 - 22 else { throw HighPerformanceSRTPError.malformedPacket }
+        guard index < (1 << 48), sent < (1 << 31) else { throw HighPerformanceSRTPError.exhausted }
+        let sequence = UInt16(truncatingIfNeeded: index)
+        let roc = UInt32(index >> 16)
+        var packet = Data([0x80, payloadType | (marker ? 0x80 : 0), UInt8(sequence >> 8), UInt8(truncatingIfNeeded: sequence)])
+        packet.append(contentsOf: srtpU32(timestamp))
+        packet.append(contentsOf: srtpU32(ssrc))
+        var iv = Array(keys.salt) + [0, 0]
+        for i in 0..<4 { iv[4 + i] ^= UInt8(truncatingIfNeeded: ssrc >> (24 - i * 8)) }
+        for i in 0..<6 { iv[8 + i] ^= UInt8(truncatingIfNeeded: index >> (40 - i * 8)) }
+        packet.append(try srtpCTR(payload, key: keys.encryption, iv: iv))
+        var authenticated = packet
+        authenticated.append(contentsOf: srtpU32(roc))
+        packet.append(contentsOf: srtpHMAC(authenticated, key: keys.authentication).prefix(10))
+        index += 1
+        sent += 1
+        return packet
+    }
+}
+
+/// SRTCP sender with independent control key derivation and monotonic 31-bit
+/// index. The entire compound datagram is authenticated; bytes after the first
+/// eight are encrypted. The caller builds standards-compliant RR/SDES contents.
+final class HighPerformanceSRTCPSender {
+    private let keys: HighPerformanceSRTPKeys
+    let ssrc: UInt32
+    private var index: UInt32
+
+    init(masterKeyBlob: Data, ssrc: UInt32, initialIndex: UInt32 = 0) throws {
+        guard initialIndex <= 0x7fff_ffff else { throw HighPerformanceSRTPError.exhausted }
+        keys = try HighPerformanceSRTPKeys(masterKeyBlob: masterKeyBlob, control: true)
+        self.ssrc = ssrc
+        index = initialIndex
+    }
+
+    func protect(_ compound: Data) throws -> Data {
+        guard index <= 0x7fff_ffff else { throw HighPerformanceSRTPError.exhausted }
+        guard compound.count >= 8, compound.count <= 65535 - 14 else { throw HighPerformanceSRTPError.malformedPacket }
+        _ = try HighPerformanceSenderReport.parseCompound(compound)
+        let bytes = Array(compound)
+        guard bytes[1] == 200 || bytes[1] == 201,
+              Array(bytes[4..<8]) == srtpU32(ssrc) else { throw HighPerformanceSRTPError.malformedPacket }
+        let firstLength = ((Int(bytes[2]) << 8 | Int(bytes[3])) + 1) * 4
+        let reportCount = Int(bytes[0] & 31)
+        guard firstLength >= (bytes[1] == 200 ? 28 : 8) + reportCount * 24 else { throw HighPerformanceSRTPError.malformedPacket }
+        var iv = Array(keys.salt) + [0, 0]
+        for i in 0..<4 { iv[4 + i] ^= UInt8(truncatingIfNeeded: ssrc >> (24 - i * 8)) }
+        for i in 0..<4 { iv[10 + i] ^= UInt8(truncatingIfNeeded: index >> (24 - i * 8)) }
+        var packet = Data(bytes.prefix(8))
+        packet.append(try srtpCTR(Data(bytes.dropFirst(8)), key: keys.encryption, iv: iv))
+        packet.append(contentsOf: srtpU32(index | 0x8000_0000))
+        packet.append(contentsOf: srtpHMAC(packet, key: keys.authentication).prefix(10))
+        index += 1
+        return packet
+    }
+}
+
+private func srtpU32(_ value: UInt32) -> [UInt8] {
+    [UInt8(truncatingIfNeeded: value >> 24), UInt8(truncatingIfNeeded: value >> 16),
+     UInt8(truncatingIfNeeded: value >> 8), UInt8(truncatingIfNeeded: value)]
+}
