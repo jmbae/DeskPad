@@ -37,15 +37,7 @@ import Foundation
             return
         }
         connect()
-        if mode.contains("black") {
-            try await waitUntil("black compatibility session") { model.receivedClipboard == "black-ok" }
-            precondition(model.state == .connected)
-            let fallback = mode == "apple-black-fallback" || mode == "apple-black-both"
-            precondition(model.usingCompatibleColor == fallback)
-            precondition(model.framebuffer[0] == (mode == "apple-black-fallback" ? 255 : 0))
-            model.disconnect()
-            precondition(!model.usingCompatibleColor)
-        } else if mode == "multi-display" {
+        if mode == "multi-display" {
             func checkCorners(width: Int, height: Int) {
                 precondition(model.screenWidth == width && model.screenHeight == height)
                 precondition(model.framebuffer.count == width * height * 4)

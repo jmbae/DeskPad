@@ -916,7 +916,6 @@ private actor RFBClient {
                     armFirstFrameTimeout(seconds: receiveSeconds)
                 }
                 try await receiveRawRows(x: x, y: y, width: rectWidth, height: rectHeight, receiveSeconds: receiveSeconds)
-                completeDesktopDecoded = completeDesktopDecoded || (x == 0 && y == 0 && rectWidth == width && rectHeight == height)
                 #if DEBUG
                 let elapsedMilliseconds = Int(Date().timeIntervalSince(rawReadStarted) * 1_000)
                 VNCControlDiagnostics.logger.notice("raw read complete bytes=\(dataLength.partialValue) elapsed_ms=\(elapsedMilliseconds)")
@@ -961,7 +960,6 @@ private actor RFBClient {
                     // Adopt full-frame decoder storage instead of duplicating a
                     // large desktop while the previous UI snapshot is alive.
                     pixels = rgba
-                    completeDesktopDecoded = true
                 } else {
                     RFBPixelCopy.copy(rgba, into: &pixels, destinationWidth: width, x: x, y: y,
                                       width: rectWidth, height: rectHeight, sourceIsRGBA: true)
