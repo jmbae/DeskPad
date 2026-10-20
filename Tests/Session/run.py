@@ -3,7 +3,7 @@
 import pathlib, socket, struct, subprocess, sys, tempfile, threading, time, zlib
 root = pathlib.Path(__file__).resolve().parents[2]
 binary = pathlib.Path(tempfile.mkdtemp(prefix='deskpad-session-')) / 'session-tests'
-subprocess.run(['swiftc', '-parse-as-library', str(root/'DeskPad/ConnectionStore.swift'), str(root/'DeskPad/VNCSession.swift'), str(root/'DeskPad/RFBZRLEDecoder.swift'), str(root/'Tests/Session/Harness.swift'), '-o', str(binary)], check=True)
+subprocess.run(['swiftc', '-parse-as-library', str(root/'DeskPad/ConnectionStore.swift'), str(root/'DeskPad/VNCSession.swift'), str(root/'DeskPad/RFBInputQueue.swift'), str(root/'DeskPad/RFBZRLEDecoder.swift'), str(root/'Tests/Session/Harness.swift'), '-o', str(binary)], check=True)
 def exact(c,n):
     out=b''
     while len(out)<n:
