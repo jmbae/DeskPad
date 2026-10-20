@@ -36,3 +36,17 @@ session, and a suspended send does not retain the queue owner.
 The target Mac accepted RGB565 but reset the connection for both native 8-bit RGB332 and 32-bit-padded RGB332. Neither RGB332 variant is offered by the quality API or retried automatically. Their codec-only tests remain as format coverage. The TCP RGB565 case checks exact SetPixelFormat bytes, asymmetric channel values, and subsequent Raw fallback. Decoder fixtures repeat raw/solid/packed-palette/RLE/edge/persistent-stream and malformed cases at reduced depths. Raw conversion tests exhaustively check all 65,536 RGB565 and 256 RGB332 values (including nonzero padding) against independently rounded color components. Latency depends on screen contents and network/server conditions.
 
 TCP `noDelay` disables Nagle buffering for small interactive input events ([Apple API documentation](https://developer.apple.com/documentation/network/nwprotocoltcp/options/nodelay)). No measured millisecond gain is attributed to that flag alone. No server helper, proprietary streaming codec, or server scaling command is added. The standard SetDesktopSize extension requires prior ExtendedDesktopSize support and may change the shared desktop layout; it is separate from color-depth negotiation.
+
+Cursor protocol regression: `python3 Tests/Session/run.py --case=cursor` verifies
+negotiation, a cursor before the first framebuffer, explicit hidden cursor,
+XCursor updates without republishing the framebuffer, and disconnect cleanup.
+The decoder fixture can be run separately:
+
+```sh
+swiftc -parse-as-library DeskPad/RFBZRLEDecoder.swift DeskPad/RFBCursorShape.swift Tests/Session/CursorHarness.swift -o /tmp/deskpad-cursor-tests
+/tmp/deskpad-cursor-tests
+```
+
+Cursor formats follow https://github.com/rfbproto/rfbproto/blob/master/rfbproto.rst
+(Cursor and X Cursor pseudo-encodings). Server support is optional; advertising
+these encodings alone does not establish that a particular Mac sends shapes.
