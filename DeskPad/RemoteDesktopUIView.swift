@@ -349,10 +349,22 @@ final class RemoteDesktopUIView: UIView {
         switch recognizer.state {
         case .began:
             if !isFirstResponder { _ = becomeFirstResponder() }
+            // Recognition starts after movement (and tap failure). Press at
+            // the original touch point before forwarding that first movement.
+            let translation = recognizer.translation(in: self)
+            let origin = viewPointToDesktopPoint(CGPoint(
+                x: viewPoint.x - translation.x, y: viewPoint.y - translation.y))
+            pointer(origin, mask: 0)
+            pointer(origin, mask: 1)
             pointer(desktopPoint, mask: 1)
         case .changed:
             pointer(desktopPoint)
-        case .ended, .cancelled:
+        case .ended:
+            // Sparse event streams may have no changed callback, or may carry
+            // their final movement only on ended. Move while still pressed.
+            pointer(desktopPoint)
+            pointer(desktopPoint, mask: 0)
+        case .cancelled:
             pointer(desktopPoint, mask: 0)
         default:
             break
