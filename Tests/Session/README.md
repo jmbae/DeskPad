@@ -56,6 +56,10 @@ framing, unknown cache references, following message alignment, and unchanged
 framebuffer revision. The decoder uses an independent bounded zlib stream per
 STORE and caches at most 64 shapes / 16 MiB per connection. Pixel data is BGRA
 plus a separate alpha plane, independent of the negotiated framebuffer depth.
-This optional encoding is advertised without enabling Apple's separate encrypted
-high-performance protocol; live support on the regular RFB connection must be
-verified rather than inferred from the extension advertisement.
+For servers advertising Apple's 3.889 banner, the client negotiates 3.889,
+sends ClientInit C1 and ViewerInfo, and advertises only cached Apple cursors.
+The test asserts those exact handshake bytes and consumes a bounded status
+heartbeat before cursor updates. Other VNC servers keep the standard handshake
+and Cursor/XCursor encodings. No encrypted record layer, virtual display, or
+automatic framebuffer streaming is enabled. Live Mac QA observed 1104 STORE and
+SELECT updates using this combination; see the main live-QA report for UI checks.

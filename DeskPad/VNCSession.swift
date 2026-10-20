@@ -315,6 +315,7 @@ private actor RFBClient {
     private weak var model: VNCSessionModel?
     private let generation: UUID
     private let timeoutState = RFBTimeoutState()
+    private var usesAppleExtensions = false
     private let appleCursorCache = RFBAppleCursorCache()
     private let pixelFormat: RFBPixelFormat
     private let zrleDecoder: RFBZRLEDecoder
@@ -363,12 +364,8 @@ private actor RFBClient {
               serverMinor >= 3 else {
             throw ClientError.invalidServerMessage("버전 문자열이 올바르지 않습니다.")
         }
-        #if DEBUG && DESKPAD_APPLE_VERSION
-        let negotiatedMinor: UInt16 = serverMinor == 889 ? 889 : (serverMinor >= 8 ? 8 : (serverMinor >= 7 ? 7 : 3))
-        VNCControlDiagnostics.logger.notice("Apple version diagnostic negotiated_minor=\(negotiatedMinor)")
-        #else
-        let negotiatedMinor: UInt16 = serverMinor >= 8 ? 8 : (serverMinor >= 7 ? 7 : 3)
-        #endif
+        usesAppleExtensions = serverMinor == 889
+        let negotiatedMinor: UInt16 = usesAppleExtensions ? 889 : (serverMinor >= 8 ? 8 : (serverMinor >= 7 ? 7 : 3))
         let version = String(format: "RFB 003.%03d\n", negotiatedMinor)
         try await send(Data(version.utf8))
 
@@ -449,13 +446,7 @@ private actor RFBClient {
         }
 
         await model?.setState(.initializing, generation: generation)
-        #if DEBUG && DESKPAD_APPLE_CLIENT_INIT
-        let sharedFlag: UInt8 = negotiatedMinor == 889 ? 0xC1 : 1
-        try await send(Data([sharedFlag]))
-        VNCControlDiagnostics.logger.notice("Apple ClientInit diagnostic flags=\(sharedFlag)")
-        #else
-        try await send(Data([1]))
-        #endif
+        try await send(Data([usesAppleExtensions ? 0xC1 : 1]))
         let dimensions = try await readExactly(4)
         width = Int(dimensions.readUInt16(at: 0))
         height = Int(dimensions.readUInt16(at: 2))
@@ -475,23 +466,20 @@ private actor RFBClient {
         _ = try await readExactly(Int(nameLength))
 
         pixels = Data(repeating: 0, count: width * height * 4)
-        #if DEBUG && DESKPAD_APPLE_VIEWER_INFO
-        if negotiatedMinor == 889 {
+        if usesAppleExtensions {
             var viewerInfo = Data([0x21, 0, 0, 62, 0, 1])
             for value: UInt32 in [2, 6, 1, 0, 15, 3, 0] { viewerInfo.appendUInt32(value) }
             var mask = [UInt8](repeating: 0, count: 32)
             mask[0] = 0xB0; mask[2] = 0x0C; mask[3] = 0x03; mask[4] = 0x90; mask[10] = 0x40
             viewerInfo.append(contentsOf: mask)
             try await send(viewerInfo)
-            VNCControlDiagnostics.logger.notice("Apple ViewerInfo diagnostic sent")
+            #if DEBUG
+            VNCControlDiagnostics.logger.notice("Apple cursor extensions enabled")
+            #endif
         }
-        #endif
         try await sendPixelFormat()
         try await sendEncodings()
         try await requestUpdate(incremental: false)
-        #if DEBUG && DESKPAD_APPLE_CURSOR_STREAM
-        try await sendAppleAutoUpdate()
-        #endif
         await model?.setScreen(width: width, height: height, framebuffer: Data(), generation: generation)
         armFirstFrameTimeout()
 
@@ -776,42 +764,21 @@ private actor RFBClient {
 
     private func sendEncodings() async throws {
         var message = Data([2, 0])
-        #if DEBUG && DESKPAD_APPLE_CURSOR_ONLY
-        var encodingCount: UInt16 = 5
-        #else
-        var encodingCount: UInt16 = 7
-        #endif
-        #if DEBUG && DESKPAD_APPLE_CAPABILITY
-        encodingCount += 1
-        #endif
-        message.appendUInt16(encodingCount)
+        message.appendUInt16(usesAppleExtensions ? 5 : 6)
         message.appendInt32(16)
         message.appendInt32(0)
         message.appendInt32(1)
         message.appendInt32(-223)
-        message.appendInt32(0x450)
-        #if DEBUG && DESKPAD_APPLE_CAPABILITY
-        message.appendInt32(1100)
-        #endif
-        #if !(DEBUG && DESKPAD_APPLE_CURSOR_ONLY)
-        message.appendInt32(-239)
-        message.appendInt32(-240)
-        #endif
+        if usesAppleExtensions {
+            // Match native Apple clients: use cached cursor shapes exclusively.
+            // Mixed legacy/Apple advertisement did not yield shapes in live QA.
+            message.appendInt32(0x450)
+        } else {
+            message.appendInt32(-239)
+            message.appendInt32(-240)
+        }
         try await send(message)
     }
-
-    #if DEBUG && DESKPAD_APPLE_CURSOR_STREAM
-    // Interoperability diagnostic only: Apple's 0x09 is not standard RFB.
-    private func sendAppleAutoUpdate() async throws {
-        var message = Data([9, 0, 0, 1, 255, 255, 255, 255])
-        message.appendUInt16(0)
-        message.appendUInt16(0)
-        message.appendUInt16(UInt16(width))
-        message.appendUInt16(UInt16(height))
-        try await send(message)
-        VNCControlDiagnostics.logger.notice("Apple auto framebuffer diagnostic enabled")
-    }
-    #endif
 
     private func requestUpdate(incremental: Bool) async throws {
         var message = Data([3, incremental ? 1 : 0])
@@ -827,25 +794,23 @@ private actor RFBClient {
         switch messageType {
         case 0:
             let resized = try await readFramebufferUpdate()
-            #if DEBUG && DESKPAD_APPLE_CURSOR_STREAM
-            if resized {
-                try await requestUpdate(incremental: false)
-                try await sendAppleAutoUpdate()
-            }
-            #else
             try await requestUpdate(incremental: !resized)
-            #endif
-        #if DEBUG && DESKPAD_APPLE_VIEWER_INFO
         case 0x14:
+            guard usesAppleExtensions else {
+                throw ClientError.invalidServerMessage("협상하지 않은 Apple 상태 메시지입니다.")
+            }
             let header = try await readExactly(3)
             let length = Int(header.readUInt16(at: 1))
             guard length >= 4, length <= 4096 else {
                 throw ClientError.invalidServerMessage("Apple 상태 메시지 길이가 허용 범위를 벗어났습니다.")
             }
             let status = try await readExactly(length)
+            #if DEBUG
             let command = status.readUInt16(at: 2)
-            VNCControlDiagnostics.logger.notice("Apple status diagnostic command=\(command) bytes=\(length)")
-        #endif
+            VNCControlDiagnostics.logger.notice("Apple status command=\(command) bytes=\(length)")
+            #else
+            _ = status
+            #endif
         case 2:
             break
         case 3:
@@ -971,6 +936,9 @@ private actor RFBClient {
                 pixelsChanged = pixelsChanged || (rectWidth > 0 && rectHeight > 0)
                 copyRectangle(sourceX: sourceX, sourceY: sourceY, x: x, y: y, width: rectWidth, height: rectHeight)
             case 0x450:
+                guard usesAppleExtensions else {
+                    throw ClientError.invalidServerMessage("협상하지 않은 Apple 커서 메시지입니다.")
+                }
                 let cacheID = try await readUInt32()
                 let compressedLength = Int(try await readUInt32())
                 if compressedLength > 0 {
