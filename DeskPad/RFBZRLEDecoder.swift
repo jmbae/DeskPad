@@ -1,8 +1,54 @@
 import Foundation
 import zlib
 
+// Quality changes are negotiated only when opening a new connection.
+nonisolated enum VNCColorQuality: String, CaseIterable, Sendable {
+    case fullColor, balanced, lowLatency
+
+    var pixelFormat: RFBPixelFormat {
+        switch self {
+        case .fullColor: .rgb888
+        case .balanced: .rgb565
+        case .lowLatency: .rgb332
+        }
+    }
+}
+
+// The three true-color formats advertised by this client. Pixel words are
+// little endian; channel maxima in SetPixelFormat are always network endian.
+nonisolated enum RFBPixelFormat: String, Sendable {
+    case rgb888, rgb565, rgb332
+
+    var bytesPerPixel: Int {
+        switch self { case .rgb888: 4; case .rgb565: 2; case .rgb332: 1 }
+    }
+    var bytesPerCPixel: Int { self == .rgb888 ? 3 : bytesPerPixel }
+    var wireBytes: Data {
+        switch self {
+        case .rgb888: Data([32,24,0,1,0,255,0,255,0,255,16,8,0,0,0,0])
+        case .rgb565: Data([16,16,0,1,0,31,0,63,0,31,11,5,0,0,0,0])
+        case .rgb332: Data([8,8,0,1,0,7,0,7,0,3,5,2,0,0,0,0])
+        }
+    }
+
+    func rgb(_ value: UInt32) -> (UInt8, UInt8, UInt8) {
+        switch self {
+        case .rgb888:
+            return (UInt8((value >> 16) & 255), UInt8((value >> 8) & 255), UInt8(value & 255))
+        case .rgb565:
+            return (UInt8((((value >> 11) & 31) * 255 + 15) / 31),
+                    UInt8((((value >> 5) & 63) * 255 + 31) / 63),
+                    UInt8(((value & 31) * 255 + 15) / 31))
+        case .rgb332:
+            return (UInt8((((value >> 5) & 7) * 255 + 3) / 7),
+                    UInt8((((value >> 2) & 7) * 255 + 3) / 7),
+                    UInt8(((value & 3) * 255 + 1) / 3))
+        }
+    }
+}
+
 // RFC 6143 §7.7.6 / rfbproto ZRLE: one zlib stream per connection.
-// The client negotiates 32-bit little-endian RGB888, so CPIXEL is B,G,R.
+// CPIXEL uses B,G,R for RGB888 and little-endian 2/1-byte words for RGB565/332.
 // This instance belongs exclusively to the transport actor.
 nonisolated final class RFBZRLEDecoder {
     enum DecodeError: LocalizedError {
@@ -13,10 +59,12 @@ nonisolated final class RFBZRLEDecoder {
         }
     }
 
+    private let pixelFormat: RFBPixelFormat
     private let stream: UnsafeMutablePointer<z_stream>
     private var initialized = false
 
-    init() {
+    init(pixelFormat: RFBPixelFormat = .rgb888) {
+        self.pixelFormat = pixelFormat
         stream = .allocate(capacity: 1)
         stream.initialize(to: z_stream())
     }
@@ -27,25 +75,25 @@ nonisolated final class RFBZRLEDecoder {
         stream.deallocate()
     }
 
-    static func maximumCompressedLength(width: Int, height: Int) throws -> Int {
-        let inflated = try maximumInflatedLength(width: width, height: height)
+    static func maximumCompressedLength(width: Int, height: Int, pixelFormat: RFBPixelFormat = .rgb888) throws -> Int {
+        let inflated = try maximumInflatedLength(width: width, height: height, pixelFormat: pixelFormat)
         // Deflate overhead allowance, while rejecting huge lengths for tiny
         // rectangles before receiving or allocating their payloads.
         return min(128 * 1024 * 1024, inflated + inflated / 1000 + 64 * 1024)
     }
 
-    private static func maximumInflatedLength(width: Int, height: Int) throws -> Int {
+    private static func maximumInflatedLength(width: Int, height: Int, pixelFormat: RFBPixelFormat) throws -> Int {
         guard width > 0, height > 0, width <= 8192, height <= 8192,
               width * height <= 32_000_000 else {
             throw DecodeError.invalid("사각형 크기가 허용 범위를 벗어났습니다.")
         }
         let tileCount = ((width + 63) / 64) * ((height + 63) / 64)
-        return width * height * 4 + tileCount * 382
+        return width * height * (pixelFormat.bytesPerCPixel + 1) + tileCount * (1 + 127 * pixelFormat.bytesPerCPixel)
     }
 
     func decode(_ compressed: Data, width: Int, height: Int,
                 deadline: ContinuousClock.Instant = .now + .seconds(20)) throws -> Data {
-        let maximumCompressed = try Self.maximumCompressedLength(width: width, height: height)
+        let maximumCompressed = try Self.maximumCompressedLength(width: width, height: height, pixelFormat: pixelFormat)
         guard !compressed.isEmpty, compressed.count <= maximumCompressed else {
             throw DecodeError.invalid("사각형 또는 압축 길이가 허용 범위를 벗어났습니다.")
         }
@@ -56,9 +104,9 @@ nonisolated final class RFBZRLEDecoder {
             }
             initialized = true
         }
-        // Worst legal tile: four bytes per pixel (plain RLE length-one runs),
+        // Worst legal tile: CPIXEL plus one byte per pixel (plain RLE length-one runs),
         // plus header and largest possible palette. Bound before inflating.
-        let maximumInflated = try Self.maximumInflatedLength(width: width, height: height)
+        let maximumInflated = try Self.maximumInflatedLength(width: width, height: height, pixelFormat: pixelFormat)
         let inflated = try inflateRectangle(compressed, limit: maximumInflated, deadline: deadline)
         var output = Data(count: width * height * 4)
         try inflated.withUnsafeBytes { inputBytes in
@@ -70,8 +118,16 @@ nonisolated final class RFBZRLEDecoder {
                 return input[cursor]
             }
             func pixel() throws -> (UInt8, UInt8, UInt8) {
-                let b = try byte(), g = try byte(), r = try byte()
-                return (r, g, b)
+                switch pixelFormat {
+                case .rgb888:
+                    let b = try byte(), g = try byte(), r = try byte()
+                    return (r, g, b)
+                case .rgb565:
+                    let low = UInt32(try byte()), high = UInt32(try byte())
+                    return pixelFormat.rgb(low | high << 8)
+                case .rgb332:
+                    return pixelFormat.rgb(UInt32(try byte()))
+                }
             }
             func runLength(remaining: Int) throws -> Int {
                 var length = 1
@@ -190,23 +246,31 @@ nonisolated final class RFBZRLEDecoder {
 // Both paths produce RGBA without Foundation Data indexing per channel.
 nonisolated enum RFBPixelCopy {
     static func copy(_ source: Data, into destination: inout Data, destinationWidth: Int,
-                     x: Int, y: Int, width: Int, height: Int, sourceIsRGBA: Bool = false) {
+                     x: Int, y: Int, width: Int, height: Int, sourceIsRGBA: Bool = false,
+                     pixelFormat: RFBPixelFormat = .rgb888) {
         guard width > 0, height > 0 else { return }
         source.withUnsafeBytes { sourceBytes in
             destination.withUnsafeMutableBytes { destinationBytes in
                 let input = sourceBytes.bindMemory(to: UInt8.self)
                 let output = destinationBytes.bindMemory(to: UInt8.self)
                 for row in 0..<height {
-                    let sourceStart = row * width * 4
+                    let sourcePixelBytes = sourceIsRGBA ? 4 : pixelFormat.bytesPerPixel
+                    let sourceStart = row * width * sourcePixelBytes
                     let destinationStart = ((y + row) * destinationWidth + x) * 4
                     if sourceIsRGBA {
                         output.baseAddress!.advanced(by: destinationStart).update(from: input.baseAddress!.advanced(by: sourceStart), count: width * 4)
                     } else {
                         for column in 0..<width {
-                            let i = sourceStart + column * 4, o = destinationStart + column * 4
-                            output[o] = input[i + 2]
-                            output[o + 1] = input[i + 1]
-                            output[o + 2] = input[i]
+                            let i = sourceStart + column * sourcePixelBytes, o = destinationStart + column * 4
+                            if pixelFormat == .rgb888 {
+                                output[o] = input[i + 2]
+                                output[o + 1] = input[i + 1]
+                                output[o + 2] = input[i]
+                            } else {
+                                let value = UInt32(input[i]) | (pixelFormat == .rgb565 ? UInt32(input[i + 1]) << 8 : 0)
+                                let color = pixelFormat.rgb(value)
+                                output[o] = color.0; output[o + 1] = color.1; output[o + 2] = color.2
+                            }
                             output[o + 3] = 255
                         }
                     }

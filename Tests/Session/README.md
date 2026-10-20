@@ -29,3 +29,10 @@ A 4,000-movement burst must retain only the latest pending motion between button
 edges, keys, clipboard commands and wheel events. The harness also checks that
 cancellation removes pending input, an old suspended sender cannot drain a new
 session, and a suspended send does not retain the queue owner.
+## Color depth and interactive TCP
+
+`VNCSessionModel.connect(..., colorQuality:)` negotiates one format for the lifetime of a connection: `.fullColor` (RGB888 in 32-bit words), `.balanced` (RGB565 in 16-bit words), or `.lowLatency` (RGB332 in 8-bit words). The API default preserves full color; the interface selects the user's preference explicitly. ZRLE CPIXELs are respectively 3, 2, or 1 bytes, and Raw uses 4, 2, or 1 bytes. RGB565/332 deliberately reduce color precision while output storage stays RGBA. Reconnecting is required to change quality so no old compressed stream is interpreted with a new format.
+
+The TCP RGB565/332 cases check exact SetPixelFormat bytes, asymmetric channel values, and subsequent Raw fallback. Decoder fixtures repeat raw/solid/packed-palette/RLE/edge/persistent-stream and malformed cases at both depths. Raw conversion tests exhaustively check all 65,536 RGB565 and 256 RGB332 values against independently rounded color components. Actual Mac support and resulting transfer sizes still require observing that server; these tests do not promise a fixed latency reduction.
+
+TCP `noDelay` disables Nagle buffering for small interactive input events ([Apple API documentation](https://developer.apple.com/documentation/network/nwprotocoltcp/options/nodelay)). No measured millisecond gain is attributed to that flag alone. No server helper, proprietary streaming codec, or server scaling command is added. The standard SetDesktopSize extension requires prior ExtendedDesktopSize support and may change the shared desktop layout; it is separate from color-depth negotiation.
