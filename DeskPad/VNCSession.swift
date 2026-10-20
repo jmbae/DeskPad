@@ -811,10 +811,14 @@ private actor RFBClient {
     }
 
     func sendPointer(x: UInt16, y: UInt16, buttonMask: UInt8) async throws {
-        var message = Data([5, buttonMask])
-        message.appendUInt16(x)
-        message.appendUInt16(y)
-        try await send(hpCipher.map { try $0.encode(body: message) } ?? message)
+        if let hpCipher {
+            try await send(hpCipher.encodePointer(x: x, y: y, buttonMask: buttonMask))
+        } else {
+            var message = Data([5, buttonMask])
+            message.appendUInt16(x)
+            message.appendUInt16(y)
+            try await send(message)
+        }
     }
 
     func sendKey(keysym: UInt32, pressed: Bool) async throws {
