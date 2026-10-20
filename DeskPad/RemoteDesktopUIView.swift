@@ -558,7 +558,12 @@ final class RemoteDesktopUIView: UIView {
     /// are handled directly. Printable characters without command modifiers are
     /// routed through the text input system so that IME composition (Korean, etc.) works.
     func handlesDirectly(code: UIKeyboardHIDUsage, modifiers: UIKeyModifierFlags) -> Bool {
-        if code == .keyboardDeleteOrBackspace, _markedText != nil { return false }
+        // Hardware Korean composition can use insert/delete callbacks without marked text.
+        // Let UIKit decompose the active syllable before forwarding its replacement.
+        if code == .keyboardDeleteOrBackspace,
+           _markedText != nil || modifiers.intersection([.control, .alternate, .command]).isEmpty {
+            return false
+        }
         return Self.keysym(for: code) != nil || !modifiers.intersection([.control, .alternate, .command]).isEmpty
     }
     override func pressesBegan(_ presses: Set<UIPress>, with event: UIPressesEvent?) {

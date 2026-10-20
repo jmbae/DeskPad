@@ -14,8 +14,8 @@ DEBUG builds log callback kind, callback count, UTF-16 length, ASCII/non-ASCII
 scalar counts, and UIKit's current input-language identifier for insertText,
 setMarkedText, and unmarkText. No text, scalar values, key values, passwords,
 clipboard contents, hostnames, or document identifiers are logged. Release
-builds omit the helper and calls entirely. Input and rendering behavior is
-unchanged; no composition preview or refresh requests have been added.
+builds omit the helper and calls entirely. No composition preview or refresh requests have been added. The separate
+Backspace routing correction below changes input behavior.
 
 UIKit's input language identifies the local input mode; it does not identify
 the remote Mac's input source. A physical-keyboard event alone does not prove
@@ -51,3 +51,27 @@ composition layer that is absent even in a full capture. Do not make repeated
 full-frame refreshes a production workaround without that evidence.
 
 No merge, TestFlight release, or host configuration change is included.
+
+## Reproduced hardware Backspace defect (separate from display report)
+
+In the isolated local Input QA simulator, physical key presses with Korean
+input produced insertText/deleteBackward replacements, with no setMarkedText.
+Native UITextView and DeskPad both correctly entered 할때, 쌍자음, 때때,
+까께꼬, 됐, and 입력할때. Backspace exposed a distinct mismatch:
+
+| Physical sequence | Native UITextView | DeskPad before | DeskPad after |
+| --- | --- | --- | --- |
+| Shift+e, o | 때 | 때 | 때 |
+| Backspace | ㄸ | empty | ㄸ |
+| o | 때 | ㅐ | 때 |
+
+Plain and Shift+Backspace now pass to UIKit even without marked text. UIKit can
+remove one composing jamo and emit its replacement; deleteBackward still sends
+remote Backspace when no local composition exists. Ctrl/Alt/Cmd shortcuts retain
+the direct path. The after column was verified with physical pressKey events,
+observing the wire text after each key. Unit coverage checks routing, both
+key-down/up ordering for the observed replacement sequence, and remote deletion
+without locally retained text.
+
+This fixes a demonstrated deletion/recomposition defect. It does not establish
+the cause of the original transient Mac-versus-iPad display discrepancy.

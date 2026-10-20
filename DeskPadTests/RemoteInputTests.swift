@@ -324,10 +324,41 @@ final class RemoteInputTests: XCTestCase {
         view.deleteBackward()
         view.unmarkText()
         XCTAssertTrue(keys.isEmpty)
-        XCTAssertTrue(view.handlesDirectly(code: .keyboardDeleteOrBackspace, modifiers: []))
+        XCTAssertFalse(view.handlesDirectly(code: .keyboardDeleteOrBackspace, modifiers: []))
         view.deleteBackward()
         XCTAssertEqual(keys, [0xff08])
     }
+    func testHardwareKoreanBackspaceUsesUIKitWithoutMarkedText() {
+        let view = RemoteDesktopUIView()
+        XCTAssertNil(view.markedTextRange)
+        XCTAssertFalse(view.handlesDirectly(code: .keyboardDeleteOrBackspace, modifiers: []))
+        XCTAssertFalse(view.handlesDirectly(code: .keyboardDeleteOrBackspace, modifiers: [.shift]))
+        for modifier: UIKeyModifierFlags in [.control, .alternate, .command] {
+            XCTAssertTrue(view.handlesDirectly(code: .keyboardDeleteOrBackspace, modifiers: modifier))
+        }
+        var events: [String] = []
+        view.onKey = { events.append("\($0):\($1)") }
+        // UIKit's observed hardware Korean replacement sequence: 때 → ㄸ → 때.
+        view.insertText("때")
+        view.deleteBackward()
+        view.insertText("ㄸ")
+        view.deleteBackward()
+        view.insertText("때")
+        let symbols: [UInt32] = [0x0100B54C, 0xFF08, 0x01003138, 0xFF08, 0x0100B54C]
+        XCTAssertEqual(events, symbols.flatMap { ["\($0):true", "\($0):false"] })
+    }
+
+    func testUIKitBackspaceStillDeletesRemoteContentWithoutLocalText() {
+        let view = RemoteDesktopUIView()
+        var events: [String] = []
+        view.onKey = { events.append("\($0):\($1)") }
+        XCTAssertTrue(view.hasText)
+        view.deleteBackward()
+        view.insertText("a")
+        view.deleteBackward()
+        XCTAssertEqual(events, ["65288:true", "65288:false", "97:true", "97:false", "65288:true", "65288:false"])
+    }
+
     func testShortcutCommitsCompositionBeforePressingControl() {
         let view = RemoteDesktopUIView()
         var events: [String] = []
