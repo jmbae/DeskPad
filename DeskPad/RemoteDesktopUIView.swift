@@ -1,4 +1,5 @@
 import UIKit
+import AVFoundation
 #if DEBUG
 import os
 #endif
@@ -49,6 +50,23 @@ enum RemoteScrollSensitivity: String, CaseIterable {
 }
 
 final class RemoteDesktopUIView: UIView {
+    var videoLayer: AVSampleBufferDisplayLayer? {
+        didSet {
+            guard videoLayer !== oldValue else { return }
+            oldValue?.removeFromSuperlayer()
+            if let videoLayer { videoLayer.videoGravity = .resize; layer.insertSublayer(videoLayer, at: 0) }
+            setNeedsLayout()
+        }
+    }
+    private func updateVideoFrame() {
+        guard let videoLayer else { return }
+        let rect = calculateDisplayRect()
+        CATransaction.begin(); CATransaction.setDisableActions(true)
+        videoLayer.frame = CGRect(x: rect.minX * zoomScale + panOffset.x, y: rect.minY * zoomScale + panOffset.y,
+                                  width: rect.width * zoomScale, height: rect.height * zoomScale)
+        CATransaction.commit()
+    }
+
 
     #if DEBUG
     private var diagnosticCallbackCount = 0
@@ -278,6 +296,7 @@ final class RemoteDesktopUIView: UIView {
     }
 
     private func updatePointerMarker() {
+        updateVideoFrame()
         guard hasPointerPosition, let cursor = cursorPresentation,
               !cursor.isHidden, desktopSize.width > 0, desktopSize.height > 0,
               bounds.width > 0, bounds.height > 0 else {
