@@ -117,7 +117,7 @@ final class RemoteDesktopUIView: UIView {
     func keyDown(code: UIKeyboardHIDUsage, keysym: UInt32) {
         // Commit before a shortcut modifier reaches the server, while Shift remains
         // available to the local IME for composing shifted characters.
-        if _markedText != nil, code != .keyboardLeftShift, code != .keyboardRightShift {
+        if code != .keyboardLeftShift, code != .keyboardRightShift {
             unmarkText()
         }
         pressedKeys[code] = keysym; onKey?(keysym, true)
@@ -128,7 +128,10 @@ final class RemoteDesktopUIView: UIView {
             onKey?(key, true); onKey?(key, false)
         }
     }
-    private func pointer(_ point: CGPoint, mask: UInt8? = nil) {
+    func pointer(_ point: CGPoint, mask: UInt8? = nil) {
+        if let mask, mask & 0x07 & ~pointerMask != 0 {
+            unmarkText()
+        }
         pointerPoint = point
         if let mask { pointerMask = mask }
         hasPointerPosition = true

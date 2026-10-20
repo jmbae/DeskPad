@@ -328,6 +328,35 @@ final class RemoteInputTests: XCTestCase {
         view.deleteBackward()
         XCTAssertEqual(keys, [0xff08])
     }
+    func testNavigationAndClickInvalidateUnmarkedInputContext() {
+        let view = RemoteDesktopUIView()
+        let delegate = InputBoundaryDelegate()
+        view.inputDelegate = delegate
+        view.keyDown(code: .keyboardLeftShift, keysym: 0xffe1)
+        XCTAssertEqual(delegate.changes, 0)
+        view.keyDown(code: .keyboardLeftArrow, keysym: 0xff51)
+        XCTAssertEqual(delegate.changes, 1)
+        view.pointer(.zero)
+        view.pointer(.zero, mask: 8) // Wheel events must not reset composition.
+        view.pointer(.zero, mask: 0)
+        XCTAssertEqual(delegate.changes, 1)
+        view.pointer(.zero, mask: 1)
+        XCTAssertEqual(delegate.changes, 2)
+        view.pointer(CGPoint(x: 1, y: 1), mask: 1)
+        view.pointer(.zero, mask: 0)
+        XCTAssertEqual(delegate.changes, 2)
+    }
+
+    func testMarkedCompositionCommitsBeforePointerButtonDown() {
+        let view = RemoteDesktopUIView()
+        var events: [String] = []
+        view.onKey = { events.append("key:\($0):\($1)") }
+        view.onPointer = { _, mask in events.append("pointer:\(mask)") }
+        view.setMarkedText("때", selectedRange: NSRange(location: 1, length: 0))
+        view.pointer(.zero, mask: 1)
+        XCTAssertEqual(events, ["key:16823628:true", "key:16823628:false", "pointer:1"])
+    }
+
     func testHardwareKoreanBackspaceUsesUIKitWithoutMarkedText() {
         let view = RemoteDesktopUIView()
         XCTAssertNil(view.markedTextRange)
@@ -409,4 +438,13 @@ private final class StubHover: UIHoverGestureRecognizer {
     var testLocation = CGPoint.zero
     override var state: UIGestureRecognizer.State { get { testState } set { testState = newValue } }
     override func location(in view: UIView?) -> CGPoint { testLocation }
+}
+
+@MainActor
+private final class InputBoundaryDelegate: NSObject, UITextInputDelegate {
+    var changes = 0
+    func selectionWillChange(_ textInput: (any UITextInput)?) {}
+    func selectionDidChange(_ textInput: (any UITextInput)?) {}
+    func textWillChange(_ textInput: (any UITextInput)?) {}
+    func textDidChange(_ textInput: (any UITextInput)?) { changes += 1 }
 }

@@ -75,3 +75,12 @@ without locally retained text.
 
 This fixes a demonstrated deletion/recomposition defect. It does not establish
 the cause of the original transient Mac-versus-iPad display discrepancy.
+
+Boundary testing then exposed retained UIKit Korean composition after direct
+Left-arrow and pointer-click events. With the Backspace correction alone,
+`때 → Left/click → Backspace → o` incorrectly decomposed/recomposed the old
+syllable. Notifying the input delegate through unmarkText before non-Shift
+direct keys and new pointer-button presses clears that stale context. Physical
+simulator verification now shows a plain delete callback followed by `ㅐ`,
+matching native navigation behavior. A focus-away/back cycle also passed.
+Hover, held-button motion, wheel events, and button releases do not reset IME.
