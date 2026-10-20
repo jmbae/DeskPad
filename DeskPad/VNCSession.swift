@@ -776,14 +776,20 @@ private actor RFBClient {
 
     private func sendEncodings() async throws {
         var message = Data([2, 0])
+        #if DEBUG && DESKPAD_APPLE_CURSOR_ONLY
+        message.appendUInt16(5)
+        #else
         message.appendUInt16(7)
+        #endif
         message.appendInt32(16)
         message.appendInt32(0)
         message.appendInt32(1)
         message.appendInt32(-223)
         message.appendInt32(0x450)
+        #if !(DEBUG && DESKPAD_APPLE_CURSOR_ONLY)
         message.appendInt32(-239)
         message.appendInt32(-240)
+        #endif
         try await send(message)
     }
 
