@@ -63,6 +63,8 @@ final class VNCSessionModel {
         }
     }
     private(set) var framebuffer = Data()
+    private(set) var remoteCursor: RFBCursorShape?
+    private(set) var framebufferRevision: UInt64 = 0
     private(set) var screenWidth = 0
     private(set) var screenHeight = 0
     private(set) var errorDetails: String?
@@ -120,6 +122,8 @@ final class VNCSessionModel {
         if let client { Task { await client.close() } }
         client = nil
         framebuffer = Data()
+        framebufferRevision &+= 1
+        remoteCursor = nil
         screenWidth = 0
         screenHeight = 0
         errorDetails = nil
@@ -215,12 +219,19 @@ final class VNCSessionModel {
         screenWidth = width
         screenHeight = height
         self.framebuffer = framebuffer
+        framebufferRevision &+= 1
     }
 
     fileprivate func setFramebuffer(_ framebuffer: Data, generation: UUID) {
         guard self.generation == generation else { return }
         self.framebuffer = framebuffer
+        framebufferRevision &+= 1
         state = .connected
+    }
+
+    fileprivate func setCursor(_ cursor: RFBCursorShape, generation: UUID) {
+        guard self.generation == generation else { return }
+        remoteCursor = cursor
     }
 
     fileprivate func setClipboard(_ text: String, generation: UUID) {
@@ -739,11 +750,13 @@ private actor RFBClient {
 
     private func sendEncodings() async throws {
         var message = Data([2, 0])
-        message.appendUInt16(4)
+        message.appendUInt16(6)
         message.appendInt32(16)
         message.appendInt32(0)
         message.appendInt32(1)
         message.appendInt32(-223)
+        message.appendInt32(-239)
+        message.appendInt32(-240)
         try await send(message)
     }
 
@@ -782,6 +795,7 @@ private actor RFBClient {
         let updateStarted = Date()
         #endif
         var resized = false
+        var pixelsChanged = false
         let header = try await readExactly(3)
         let rectangleCount = Int(header.readUInt16(at: 1))
         guard rectangleCount <= 4096 else {
@@ -824,6 +838,7 @@ private actor RFBClient {
                     firstFrameTimeout?.cancel()
                     firstFrameTimeout = nil
                 }
+                pixelsChanged = pixelsChanged || (rectWidth > 0 && rectHeight > 0)
                 copyRaw(raw, x: x, y: y, width: rectWidth, height: rectHeight)
             case 16:
                 guard rectWidth > 0, rectHeight > 0, rectWidth <= width, rectHeight <= height,
@@ -858,6 +873,7 @@ private actor RFBClient {
                 RFBPixelCopy.copy(rgba, into: &pixels, destinationWidth: width, x: x, y: y,
                                   width: rectWidth, height: rectHeight, sourceIsRGBA: true)
                 hasFrame = true
+                pixelsChanged = true
                 firstFrameTimeout?.cancel()
                 firstFrameTimeout = nil
                 #if DEBUG
@@ -872,7 +888,18 @@ private actor RFBClient {
                       sourceX <= width - rectWidth, sourceY <= height - rectHeight else {
                     throw ClientError.invalidServerMessage("CopyRect가 화면 경계를 벗어났습니다.")
                 }
+                pixelsChanged = pixelsChanged || (rectWidth > 0 && rectHeight > 0)
                 copyRectangle(sourceX: sourceX, sourceY: sourceY, x: x, y: y, width: rectWidth, height: rectHeight)
+            case -239, -240:
+                let length = try RFBCursorShape.payloadLength(width: rectWidth, height: rectHeight,
+                    hotspotX: x, hotspotY: y, encoding: encoding, pixelFormat: pixelFormat)
+                let payload = try await readExactly(length)
+                let cursor = try RFBCursorShape.decode(payload, width: rectWidth, height: rectHeight,
+                    hotspotX: x, hotspotY: y, encoding: encoding, pixelFormat: pixelFormat)
+                #if DEBUG
+                VNCControlDiagnostics.logger.notice("cursor shape encoding=\(encoding) width=\(rectWidth) height=\(rectHeight) hotspot_x=\(x) hotspot_y=\(y)")
+                #endif
+                await model?.setCursor(cursor, generation: generation)
             case -223:
                 let newWidth = rectWidth
                 let newHeight = rectHeight
@@ -888,7 +915,7 @@ private actor RFBClient {
                 throw ClientError.invalidServerMessage("지원하지 않는 인코딩 \(encoding).")
             }
         }
-        if hasFrame { await model?.setFramebuffer(pixels, generation: generation) }
+        if hasFrame && pixelsChanged { await model?.setFramebuffer(pixels, generation: generation) }
         #if DEBUG
         VNCControlDiagnostics.logger.notice("frame update complete rectangles=\(rectangleCount) elapsed_ms=\(Int(Date().timeIntervalSince(updateStarted) * 1_000))")
         #endif

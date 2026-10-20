@@ -37,7 +37,22 @@ import Foundation
             return
         }
         connect()
-        if mode == "rgb565" {
+        if mode == "cursor" {
+            try await waitUntil("cursor before first frame") { model.remoteCursor != nil }
+            precondition(model.state == .initializing && model.framebuffer.isEmpty)
+            precondition(model.remoteCursor?.hotspotX == 1)
+            precondition(model.remoteCursor?.rgba == Data([255,0,0,255,0,255,0,255]))
+            try signalServer()
+            try await waitUntil("hidden cursor and frame") { model.state == .connected }
+            precondition(model.remoteCursor?.isHidden == true)
+            let revision = model.framebufferRevision
+            // The server removes the first marker before awaiting the next.
+            try await Task.sleep(for: .milliseconds(100))
+            try signalServer()
+            try await waitUntil("cursor-only update after frame") { model.remoteCursor?.width == 1 }
+            precondition(model.framebufferRevision == revision)
+            precondition(model.framebuffer == Data([255,0,0,255]))
+        } else if mode == "rgb565" {
             try await waitUntil("reduced-color frame") { model.state == .connected }
             let expected: [UInt8] = [140, 142, 41, 255]
             precondition(model.framebuffer == Data(expected))
@@ -141,6 +156,7 @@ import Foundation
         model.disconnect()
         try await Task.sleep(for: .milliseconds(100))
         precondition(model.state == .disconnected)
+        precondition(model.remoteCursor == nil)
         print("PASS \(mode)")
     }
 }
