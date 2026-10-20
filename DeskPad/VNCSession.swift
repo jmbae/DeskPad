@@ -70,7 +70,7 @@ final class VNCSessionModel {
     private(set) var receivedClipboard: String?
     private(set) var clipboardError: String?
     private var generation = UUID()
-    private var inputTask: Task<Void, Never>?
+    private let inputQueue = RFBInputQueue()
     #if DEBUG
     private var inputCallbacks = 0
     private var inputAccepted = 0
@@ -107,7 +107,7 @@ final class VNCSessionModel {
 
     isolated deinit {
         sessionTask?.cancel()
-        inputTask?.cancel()
+        inputQueue.cancel()
         if let client { Task { await client.close() } }
     }
 
@@ -115,8 +115,7 @@ final class VNCSessionModel {
         generation = UUID()
         sessionTask?.cancel()
         sessionTask = nil
-        inputTask?.cancel()
-        inputTask = nil
+        inputQueue.cancel()
         if let client { Task { await client.close() } }
         client = nil
         framebuffer = Data()
@@ -142,7 +141,7 @@ final class VNCSessionModel {
         errorDetails = message
     }
 
-    private func enqueueInput(allowReleaseWhenInitializing: Bool = false, _ operation: @escaping @Sendable (RFBClient) async throws -> Void) {
+    private func enqueueInput(_ command: RFBInputCommand, allowReleaseWhenInitializing: Bool = false) {
         let canRelease = allowReleaseWhenInitializing && state == .initializing && screenWidth > 0 && screenHeight > 0
         #if DEBUG
         inputCallbacks += 1
@@ -159,33 +158,40 @@ final class VNCSessionModel {
         VNCControlDiagnostics.logger.notice("input accepted callbacks=\(self.inputCallbacks) accepted=\(self.inputAccepted)")
         #endif
         let generation = self.generation
-        let previous = inputTask
-        inputTask = Task { [weak self] in
-            await previous?.value
-            guard !Task.isCancelled, self?.generation == generation else { return }
-            do {
-                try await operation(client)
-                #if DEBUG
-                if let self, self.generation == generation {
-                    self.inputCompleted += 1
-                    VNCControlDiagnostics.logger.notice("input send completed=\(self.inputCompleted)")
-                }
-                #endif
+        inputQueue.enqueue(command, send: { [weak self] command in
+            switch command {
+            case .pointer(let x, let y, let mask):
+                try await client.sendPointer(x: x, y: y, buttonMask: mask)
+            case .key(let keysym, let pressed):
+                try await client.sendKey(keysym: keysym, pressed: pressed)
+            case .clipboard(let bytes):
+                try await client.sendClipboard(bytes: bytes)
             }
-            catch { self?.fail(error, generation: generation) }
-        }
+            #if DEBUG
+            await self?.recordCompletedInput(generation: generation)
+            #endif
+        }, onError: { [weak self] error in
+            self?.fail(error, generation: generation)
+        })
     }
+
+    #if DEBUG
+    private func recordCompletedInput(generation: UUID) {
+        guard self.generation == generation else { return }
+        inputCompleted += 1
+        VNCControlDiagnostics.logger.notice("input send completed=\(self.inputCompleted)")
+    }
+    #endif
 
     func sendPointer(x: Int, y: Int, buttonMask: UInt8) {
         let boundedX = min(max(x, 0), max(screenWidth - 1, 0))
         let boundedY = min(max(y, 0), max(screenHeight - 1, 0))
-        enqueueInput(allowReleaseWhenInitializing: buttonMask == 0) { client in
-            try await client.sendPointer(x: UInt16(boundedX), y: UInt16(boundedY), buttonMask: buttonMask)
-        }
+        enqueueInput(.pointer(x: UInt16(boundedX), y: UInt16(boundedY), mask: buttonMask),
+                     allowReleaseWhenInitializing: buttonMask == 0)
     }
 
     func sendKey(keysym: UInt32, pressed: Bool) {
-        enqueueInput(allowReleaseWhenInitializing: !pressed) { client in try await client.sendKey(keysym: keysym, pressed: pressed) }
+        enqueueInput(.key(keysym: keysym, pressed: pressed), allowReleaseWhenInitializing: !pressed)
     }
 
     func sendClipboard(text: String) {
@@ -194,7 +200,7 @@ final class VNCSessionModel {
             return
         }
         clipboardError = nil
-        enqueueInput { client in try await client.sendClipboard(bytes: bytes) }
+        enqueueInput(.clipboard(bytes))
     }
 
     fileprivate func setState(_ state: VNCConnectionState, generation: UUID) {
