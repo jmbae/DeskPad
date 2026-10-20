@@ -39,6 +39,17 @@ import Foundation
         let newSession = try RFBAppleCursorCache().decode(cacheID: 1000, compressed: Data(), width: 0, height: 0, hotspotX: 0, hotspotY: 0)
         precondition(newSession == nil)
         rejects { _ = try cache.decode(cacheID: 1, compressed: Data([0,0]), width: 1, height: 1, hotspotX: 0, hotspotY: 0) }
+        rejects { _ = try cache.decode(cacheID: 1, compressed: compressed, width: 2, height: 1, hotspotX: 0, hotspotY: 0) }
+        rejects { _ = try cache.decode(cacheID: 1, compressed: compressed, width: 1, height: 1, hotspotX: 1, hotspotY: 0) }
+        let lru = RFBAppleCursorCache()
+        for id: UInt32 in 0..<64 {
+            _ = try lru.decode(cacheID: id, compressed: compressed, width: 1, height: 1, hotspotX: 0, hotspotY: 0)
+        }
+        _ = try lru.decode(cacheID: 0, compressed: Data(), width: 0, height: 0, hotspotX: 0, hotspotY: 0)
+        _ = try lru.decode(cacheID: 64, compressed: compressed, width: 1, height: 1, hotspotX: 0, hotspotY: 0)
+        let recent = try lru.decode(cacheID: 0, compressed: Data(), width: 0, height: 0, hotspotX: 0, hotspotY: 0)
+        let evicted = try lru.decode(cacheID: 1, compressed: Data(), width: 0, height: 0, hotspotX: 0, hotspotY: 0)
+        precondition(recent != nil && evicted == nil)
         print("PASS cursor decoder: color formats, padded masks, XCursor, hotspots, hidden, invalid lengths/sizes")
     }
 }
