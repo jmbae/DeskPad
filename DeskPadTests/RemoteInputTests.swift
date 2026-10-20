@@ -443,6 +443,7 @@ private final class StubHover: UIHoverGestureRecognizer {
 @MainActor
 private final class InputBoundaryDelegate: NSObject, UITextInputDelegate {
     var changes = 0
+    func conversationContext(_ context: UIConversationContext?, didChange textInput: (any UITextInput)?) {}
     func selectionWillChange(_ textInput: (any UITextInput)?) {}
     func selectionDidChange(_ textInput: (any UITextInput)?) {}
     func textWillChange(_ textInput: (any UITextInput)?) {}

@@ -117,6 +117,7 @@ final class RemoteDesktopUIView: UIView {
     func keyDown(code: UIKeyboardHIDUsage, keysym: UInt32) {
         // Commit before a shortcut modifier reaches the server, while Shift remains
         // available to the local IME for composing shifted characters.
+        // Hardware Korean retains UIKit context even when markedText is nil.
         if code != .keyboardLeftShift, code != .keyboardRightShift {
             unmarkText()
         }
@@ -129,6 +130,7 @@ final class RemoteDesktopUIView: UIView {
         }
     }
     func pointer(_ point: CGPoint, mask: UInt8? = nil) {
+        // A new physical button press changes the remote caret; hover and wheel do not.
         if let mask, mask & 0x07 & ~pointerMask != 0 {
             unmarkText()
         }
