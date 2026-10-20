@@ -33,6 +33,23 @@ enum ConnectionValidationError: LocalizedError {
     }
 }
 
+protocol CredentialStorage {
+    func password(for id: UUID) throws -> String?
+    func set(_ password: String, for id: UUID) throws
+    func remove(for id: UUID) throws
+}
+
+enum ConnectionStorageError: LocalizedError {
+    case unreadableStore
+    case rollbackFailed(Error, Error)
+    var errorDescription: String? {
+        switch self {
+        case .unreadableStore: "저장된 연결을 읽지 못해 변경할 수 없습니다. 원본 파일을 복구한 후 다시 실행하세요."
+        case let .rollbackFailed(write, rollback): "저장 실패: \(write.localizedDescription). 자격 증명 복원 실패: \(rollback.localizedDescription)"
+        }
+    }
+}
+
 @Observable
 @MainActor
 final class ConnectionStore {
@@ -40,22 +57,95 @@ final class ConnectionStore {
     private(set) var loadError: String?
 
     private let fileURL: URL
-    private let keychain = CredentialKeychain()
+    private let keychain: any CredentialStorage
+    private var writable = true
+    private let removeLegacyFile: (URL) throws -> Void
 
-    init(fileURL: URL? = nil) {
+    init(fileURL: URL? = nil, keychain: (any CredentialStorage)? = nil, defaults: UserDefaults = .standard,
+         removeLegacyFile: @escaping (URL) throws -> Void = { try FileManager.default.removeItem(at: $0) }) {
         self.fileURL = fileURL ?? FileManager.default.urls(
-            for: .documentDirectory,
-            in: .userDomainMask
+            for: .documentDirectory, in: .userDomainMask
         )[0].appendingPathComponent("deskpad-connections.json")
-
+        self.keychain = keychain ?? CredentialKeychain()
+        self.removeLegacyFile = removeLegacyFile
         do {
-            connections = try Self.readConnections(from: self.fileURL)
+            if FileManager.default.fileExists(atPath: self.fileURL.path) {
+                connections = try Self.readConnections(from: self.fileURL)
+            }
+            try migrateLegacy(defaults: defaults)
         } catch {
+            writable = false
             loadError = "저장된 연결을 읽지 못했습니다: \(error.localizedDescription)"
         }
     }
 
+    private func migrateLegacy(defaults: UserDefaults) throws {
+        let legacyURL = fileURL.deletingLastPathComponent().appendingPathComponent("connections.json")
+        var passwords: [UUID: String] = [:]
+        let legacyExists = FileManager.default.fileExists(atPath: legacyURL.path)
+        var migrated: [SavedConnection] = []
+        if legacyExists {
+            let data = try Data(contentsOf: legacyURL)
+            migrated = try JSONDecoder().decode([SavedConnection].self, from: data)
+            let rows = try JSONSerialization.jsonObject(with: data) as? [[String: Any]] ?? []
+            for row in rows {
+                if let rawID = row["id"] as? String, let id = UUID(uuidString: rawID), let password = row["password"] as? String {
+                    passwords[id] = password
+                }
+            }
+        }
+        let hasDefaults = defaults.string(forKey: "lastHost")?.isEmpty == false
+        if let host = defaults.string(forKey: "lastHost"), !host.isEmpty {
+            let port = try Self.parsePort(defaults.string(forKey: "lastPort") ?? "5900")
+            try Self.validate(host: host, port: port)
+            // Persist only an identifier so interrupted retries reuse the same Keychain account.
+            let tokenKey = "deskpadLegacyConnectionID"
+            let id = defaults.string(forKey: tokenKey).flatMap(UUID.init(uuidString:)) ?? UUID()
+            defaults.set(id.uuidString, forKey: tokenKey)
+            let connection = SavedConnection(id: id, name: "", host: host, port: port,
+                username: defaults.string(forKey: "lastUsername") ?? "", lastConnected: nil)
+            migrated.append(connection)
+            passwords[connection.id] = defaults.string(forKey: "lastPassword") ?? ""
+        }
+        guard legacyExists || hasDefaults else { return }
+        // Keep every legacy source intact until credentials and merged metadata are durable.
+        // Existing records and credentials take precedence over stale legacy snapshots.
+        var merged = connections
+        for connection in migrated {
+            try Self.validate(host: connection.host, port: connection.port)
+            if let password = passwords[connection.id], try keychain.password(for: connection.id) == nil {
+                try keychain.set(password, for: connection.id)
+            }
+            if !merged.contains(where: { $0.id == connection.id }) { merged.append(connection) }
+        }
+        try Self.writeConnections(merged, to: fileURL)
+        connections = merged
+        // A cleanup error remains visible, and the next launch repeats this idempotent merge.
+        if legacyExists { try removeLegacyFile(legacyURL) }
+        if hasDefaults {
+            // Remove the secret first; an interrupted cleanup must not orphan a password without its host.
+            for key in ["lastPassword", "lastUsername", "lastPort", "lastHost", "deskpadLegacyConnectionID"] {
+                defaults.removeObject(forKey: key)
+            }
+        }
+    }
+
+    private func requireWritable() throws {
+        guard writable else { throw ConnectionStorageError.unreadableStore }
+    }
+
+    private func restore(_ password: String?, for id: UUID, after error: Error) throws -> Never {
+        do {
+            if let password { try keychain.set(password, for: id) }
+            else { try keychain.remove(for: id) }
+        } catch let rollback {
+            throw ConnectionStorageError.rollbackFailed(error, rollback)
+        }
+        throw error
+    }
+
     func save(_ connection: SavedConnection, newPassword: String?) throws {
+        try requireWritable()
         try Self.validate(host: connection.host, port: connection.port)
         let previousPassword = try keychain.password(for: connection.id)
         let password = newPassword?.isEmpty == false ? newPassword : nil
@@ -77,13 +167,14 @@ final class ConnectionStore {
             loadError = nil
         } catch {
             if password != nil {
-                try keychain.restore(previousPassword, for: connection.id)
+                try restore(previousPassword, for: connection.id, after: error)
             }
             throw error
         }
     }
 
     func delete(_ connection: SavedConnection) throws {
+        try requireWritable()
         let previousPassword = try keychain.password(for: connection.id)
         try keychain.remove(for: connection.id)
 
@@ -93,12 +184,12 @@ final class ConnectionStore {
             connections = updated
             loadError = nil
         } catch {
-            try keychain.restore(previousPassword, for: connection.id)
-            throw error
+            try restore(previousPassword, for: connection.id, after: error)
         }
     }
 
     func markConnected(_ connection: SavedConnection) throws {
+        try requireWritable()
         var updated = connections
         guard let index = updated.firstIndex(where: { $0.id == connection.id }) else { return }
         updated[index].lastConnected = .now
@@ -146,7 +237,7 @@ final class ConnectionStore {
     }
 }
 
-private struct CredentialKeychain {
+struct CredentialKeychain: CredentialStorage {
     private let service = "com.africastart.DeskPad.credentials"
 
     func password(for id: UUID) throws -> String? {
@@ -184,11 +275,6 @@ private struct CredentialKeychain {
         guard status == errSecSuccess || status == errSecItemNotFound else {
             throw keychainError(status)
         }
-    }
-
-    func restore(_ password: String?, for id: UUID) throws {
-        try remove(for: id)
-        if let password { try set(password, for: id) }
     }
 
     private func baseQuery(for id: UUID) -> [String: Any] {

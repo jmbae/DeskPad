@@ -79,3 +79,13 @@ final class RemoteInputTests: XCTestCase {
         XCTAssertEqual(events.count, 4)
     }
 }
+
+@MainActor
+private final class StubPan: UIPanGestureRecognizer {
+    var testState: UIGestureRecognizer.State = .possible
+    var testLocation = CGPoint.zero
+    var testTranslation = CGPoint.zero
+    override var state: UIGestureRecognizer.State { get { testState } set { testState = newValue } }
+    override func location(in view: UIView?) -> CGPoint { testLocation }
+    override func translation(in view: UIView?) -> CGPoint { testTranslation }
+}
