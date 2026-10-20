@@ -607,20 +607,34 @@ final class RemoteDesktopUIView: UIView {
             let symbol = Self.keysym(for: key.keyCode) ?? key.charactersIgnoringModifiers.unicodeScalars.first.map { $0.value <= 255 ? $0.value : 0x01000000 | $0.value }
             guard let symbol else { unhandled.insert(press); continue }
             keyDown(code: key.keyCode, keysym: symbol)
+            // UIKit owns printable text/IME, so it must see both Shift edges.
+            // Also retain remote Shift for selection and modified shortcuts.
+            if Self.isShift(key.keyCode) { unhandled.insert(press) }
         }
         if !unhandled.isEmpty { super.pressesBegan(unhandled, with: event) }
     }
     override func pressesEnded(_ presses: Set<UIPress>, with event: UIPressesEvent?) {
-        var unhandled = Set<UIPress>()
-        for press in presses {
-            if let code = press.key?.keyCode, let symbol = pressedKeys.removeValue(forKey: code) { onKey?(symbol, false) }
-            else { unhandled.insert(press) }
-        }
+        let unhandled = releaseHardwarePresses(presses)
         if !unhandled.isEmpty { super.pressesEnded(unhandled, with: event) }
     }
     override func pressesCancelled(_ presses: Set<UIPress>, with event: UIPressesEvent?) {
-        pressesEnded(presses, with: event)
+        let unhandled = releaseHardwarePresses(presses)
+        if !unhandled.isEmpty { super.pressesCancelled(unhandled, with: event) }
     }
+    private func releaseHardwarePresses(_ presses: Set<UIPress>) -> Set<UIPress> {
+        var unhandled = Set<UIPress>()
+        for press in presses {
+            if let code = press.key?.keyCode, let symbol = pressedKeys.removeValue(forKey: code) {
+                onKey?(symbol, false)
+                if Self.isShift(code) { unhandled.insert(press) }
+            } else { unhandled.insert(press) }
+        }
+        return unhandled
+    }
+    private static func isShift(_ code: UIKeyboardHIDUsage) -> Bool {
+        code == .keyboardLeftShift || code == .keyboardRightShift
+    }
+
     private static func keysym(for code: UIKeyboardHIDUsage) -> UInt32? {
         switch code {
         case .keyboardLeftControl: return 0xffe3
