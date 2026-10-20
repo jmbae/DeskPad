@@ -475,6 +475,17 @@ private actor RFBClient {
         _ = try await readExactly(Int(nameLength))
 
         pixels = Data(repeating: 0, count: width * height * 4)
+        #if DEBUG && DESKPAD_APPLE_VIEWER_INFO
+        if negotiatedMinor == 889 {
+            var viewerInfo = Data([0x21, 0, 0, 62, 0, 1])
+            for value: UInt32 in [2, 6, 1, 0, 15, 3, 0] { viewerInfo.appendUInt32(value) }
+            var mask = [UInt8](repeating: 0, count: 32)
+            mask[0] = 0xB0; mask[2] = 0x0C; mask[3] = 0x03; mask[4] = 0x90; mask[10] = 0x40
+            viewerInfo.append(contentsOf: mask)
+            try await send(viewerInfo)
+            VNCControlDiagnostics.logger.notice("Apple ViewerInfo diagnostic sent")
+        }
+        #endif
         try await sendPixelFormat()
         try await sendEncodings()
         try await requestUpdate(incremental: false)
