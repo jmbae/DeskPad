@@ -828,6 +828,17 @@ private actor RFBClient {
             #else
             try await requestUpdate(incremental: !resized)
             #endif
+        #if DEBUG && DESKPAD_APPLE_VIEWER_INFO
+        case 0x14:
+            let header = try await readExactly(3)
+            let length = Int(header.readUInt16(at: 1))
+            guard length >= 4, length <= 4096 else {
+                throw ClientError.invalidServerMessage("Apple 상태 메시지 길이가 허용 범위를 벗어났습니다.")
+            }
+            let status = try await readExactly(length)
+            let command = status.readUInt16(at: 2)
+            VNCControlDiagnostics.logger.notice("Apple status diagnostic command=\(command) bytes=\(length)")
+        #endif
         case 2:
             break
         case 3:
