@@ -37,7 +37,27 @@ import Foundation
             return
         }
         connect()
-        if mode == "slow-raw" {
+        if ["remote-close", "remote-reset", "remote-payload-close"].contains(mode) {
+            if mode == "remote-payload-close" {
+                try await waitUntil("partial first frame") { model.state == .initializing && model.screenWidth == 1 }
+            } else {
+                try await waitUntil("frame before server closes") { model.state == .connected }
+            }
+            try signalServer()
+            try await waitUntil("remote termination", allowFailure: true) { model.state == .ended }
+            precondition(model.state.title == "Mac과의 연결이 종료되었습니다")
+            precondition(model.framebuffer.isEmpty && model.screenWidth == 0 && model.screenHeight == 0)
+            precondition(model.receivedClipboard == nil && model.clipboardError == nil)
+            precondition(model.errorDetails != nil)
+            model.sendKey(keysym: 65, pressed: true)
+            model.sendPointer(x: 0, y: 0, buttonMask: 1)
+            connect()
+            precondition(model.errorDetails == nil)
+            try await waitUntil("retry frame") { model.state == .connected }
+            precondition(model.framebuffer == Data([255, 0, 0, 255]))
+            model.sendKey(keysym: 66, pressed: true)
+            try await waitUntil("fresh input after retry") { model.receivedClipboard == "retry-ok" }
+        } else if mode == "slow-raw" {
             try await waitUntil("large delayed Raw frame", seconds: 27) { model.state == .connected }
             precondition(model.framebuffer == Data(Array(repeating: [UInt8(255), 0, 0, 255], count: 1024 * 1024).joined()))
         } else if mode == "first-frame" {

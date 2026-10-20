@@ -20,6 +20,7 @@ nonisolated enum VNCControlDiagnostics {
         case .initializing: "initializing"
         case .connected: "connected"
         case .failed: "failed"
+        case .ended: "ended"
         }
     }
 }
@@ -33,6 +34,7 @@ enum VNCConnectionState: Equatable {
     case initializing
     case connected
     case failed(String)
+    case ended
 
     var title: String {
         switch self {
@@ -43,6 +45,7 @@ enum VNCConnectionState: Equatable {
         case .initializing: "화면 초기화 중…"
         case .connected: "연결됨"
         case .failed(let message): message
+        case .ended: "Mac과의 연결이 종료되었습니다"
         }
     }
 }
@@ -127,7 +130,9 @@ final class VNCSessionModel {
 
     private func fail(_ error: Error, generation: UUID) {
         guard self.generation == generation else { return }
-        reportError(error.localizedDescription)
+        let remoteTermination = error is RFBConnectionClosed && (state == .connected || state == .initializing)
+        disconnect()
+        state = remoteTermination ? .ended : .failed(error.localizedDescription)
         errorDetails = String(describing: error)
     }
 
@@ -227,6 +232,23 @@ nonisolated enum RFBReceiveBudget {
     }
 }
 
+nonisolated private struct RFBConnectionClosed: LocalizedError {
+    let detail: String
+    var errorDescription: String? {
+        "Mac과의 연결이 종료되었습니다. 화면 공유 설정과 네트워크 상태를 확인한 뒤 다시 연결해 주세요."
+    }
+}
+
+// The first-frame task and Network callbacks run on different executors.
+// Record local timeouts before canceling so their EOF/error callbacks cannot
+// be mistaken for a server-initiated termination.
+nonisolated private final class RFBTimeoutState: @unchecked Sendable {
+    private let lock = NSLock()
+    private var expired = false
+    func markExpired() { lock.lock(); defer { lock.unlock() }; expired = true }
+    var didExpire: Bool { lock.lock(); defer { lock.unlock() }; return expired }
+}
+
 private actor RFBClient {
     private enum ClientError: LocalizedError {
         case connection(String)
@@ -274,6 +296,7 @@ private actor RFBClient {
     private let password: String?
     private weak var model: VNCSessionModel?
     private let generation: UUID
+    private let timeoutState = RFBTimeoutState()
     private var hasFrame = false
     private var firstFrameTimeout: Task<Void, Never>?
     private let queue = DispatchQueue(label: "DeskPad.RFBTransport")
@@ -438,6 +461,7 @@ private actor RFBClient {
         #if DEBUG
         VNCControlDiagnostics.logger.notice("first frame deadline expired")
         #endif
+        timeoutState.markExpired()
         connection?.cancel()
     }
 
@@ -475,7 +499,10 @@ private actor RFBClient {
     private func start(_ connection: NWConnection) async throws {
         try Task.checkCancellation()
         try await withTaskCancellationHandler {
-            let timeout = DispatchWorkItem { connection.cancel() }
+            let timeout = DispatchWorkItem { [timeoutState] in
+                timeoutState.markExpired()
+                connection.cancel()
+            }
             queue.asyncAfter(deadline: .now() + responseTimeout, execute: timeout)
             defer { timeout.cancel() }
             try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
@@ -496,6 +523,12 @@ private actor RFBClient {
         } onCancel: { connection.cancel() }
     }
 
+    private nonisolated func receiveError(_ detail: String) -> Error {
+        timeoutState.didExpire
+            ? ClientError.connection("서버 응답 시간이 초과되었습니다.")
+            : RFBConnectionClosed(detail: detail)
+    }
+
     private func readExactly(_ count: Int, timeoutEnabled: Bool = true, receiveTimeout: DispatchTimeInterval = .seconds(20)) async throws -> Data {
         guard count >= 0, count <= 128 * 1024 * 1024 else {
             throw ClientError.invalidServerMessage("요청된 데이터 길이가 허용 범위를 벗어났습니다.")
@@ -503,7 +536,10 @@ private actor RFBClient {
         try Task.checkCancellation()
         guard let connection else { throw CancellationError() }
         return try await withTaskCancellationHandler {
-            let timeout = DispatchWorkItem { connection.cancel() }
+            let timeout = DispatchWorkItem { [timeoutState] in
+                timeoutState.markExpired()
+                connection.cancel()
+            }
             if timeoutEnabled { queue.asyncAfter(deadline: .now() + receiveTimeout, execute: timeout) }
             defer { timeout.cancel() }
             var result = Data()
@@ -515,11 +551,11 @@ private actor RFBClient {
                     (continuation: CheckedContinuation<Data, Error>) in
                     connection.receive(minimumIncompleteLength: 1, maximumLength: remaining) { data, _, isComplete, error in
                         if let error {
-                            continuation.resume(throwing: ClientError.connection(error.localizedDescription))
+                            continuation.resume(throwing: self.receiveError(error.localizedDescription))
                         } else if let data, !data.isEmpty {
                             continuation.resume(returning: data)
                         } else {
-                            continuation.resume(throwing: ClientError.connection(isComplete ? "서버가 연결을 종료했습니다." : "서버에서 데이터를 받지 못했습니다."))
+                            continuation.resume(throwing: isComplete ? self.receiveError("서버가 연결을 종료했습니다.") : ClientError.connection("서버에서 데이터를 받지 못했습니다."))
                         }
                     }
                 }
@@ -534,13 +570,16 @@ private actor RFBClient {
         try Task.checkCancellation()
         guard let connection else { throw CancellationError() }
         try await withTaskCancellationHandler {
-            let timeout = DispatchWorkItem { connection.cancel() }
+            let timeout = DispatchWorkItem { [timeoutState] in
+                timeoutState.markExpired()
+                connection.cancel()
+            }
             queue.asyncAfter(deadline: .now() + responseTimeout, execute: timeout)
             defer { timeout.cancel() }
             try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
                 connection.send(content: data, completion: .contentProcessed { error in
                     if let error {
-                        continuation.resume(throwing: ClientError.connection(error.localizedDescription))
+                        continuation.resume(throwing: self.receiveError(error.localizedDescription))
                     } else { continuation.resume(returning: ()) }
                 })
             }

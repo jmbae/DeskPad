@@ -12,9 +12,44 @@ def exact(c,n):
         out+=part
     return out
 errors=[]
+def serve_disconnect(listener, mode, marker):
+    for attempt in range(2):
+        c, _ = listener.accept()
+        with c:
+            c.settimeout(7)
+            c.sendall(b'RFB 003.008\n'); assert exact(c,12)==b'RFB 003.008\n'
+            c.sendall(b'\x01\x01'); assert exact(c,1)==b'\x01'
+            c.sendall(b'\0'*4); exact(c,1)
+            c.sendall(struct.pack('>HH',1,1)+b'\0'*16+struct.pack('>I',0))
+            exact(c,20); count=struct.unpack('>H',exact(c,4)[2:])[0]; exact(c,count*4); exact(c,10)
+            rectangle=b'\0\0\0\x01'+struct.pack('>HHHHi',0,0,1,1,0)
+            if attempt==0:
+                if mode=='remote-payload-close':
+                    c.sendall(rectangle+b'\0\0')
+                else:
+                    c.sendall(rectangle+b'\0\0\xff\0')
+                    exact(c,10)
+                deadline=time.monotonic()+5
+                while not marker.exists():
+                    assert time.monotonic()<deadline, 'client did not reach pre-close state'
+                    time.sleep(.01)
+                if mode=='remote-reset':
+                    c.setsockopt(socket.SOL_SOCKET,socket.SO_LINGER,struct.pack('ii',1,0))
+                else:
+                    c.shutdown(socket.SHUT_WR)
+            else:
+                c.sendall(rectangle+b'\0\0\xff\0')
+                exact(c,10)
+                assert exact(c,8)==b'\x04\x01\0\0\0\0\0B', 'stale input reached retry session'
+                c.sendall(b'\x03\0\0\0'+struct.pack('>I',8)+b'retry-ok')
+                while c.recv(1024): pass
+
 def serve(listener, mode, marker):
     stage = 'setup'
     try:
+        if mode in ('remote-close','remote-reset','remote-payload-close'):
+            serve_disconnect(listener,mode,marker)
+            return
         c,_=listener.accept()
         with c:
             c.settimeout(7)
@@ -112,7 +147,7 @@ def serve(listener, mode, marker):
         if stage != 'activity' or mode not in ('terminal-error','first-frame-timeout','resize-timeout'):
             errors.append(AssertionError(f'{mode}: unexpected disconnect before all protocol assertions completed: {error}'))
     except Exception as error: errors.append(error)
-for mode in ['slow-raw','first-frame','reconnect','malformed','clipboard','apple','apple-failure','vnc33','deinit','terminal-error','resize-release','first-frame-timeout','resize-timeout']:
+for mode in ['remote-close','remote-reset','remote-payload-close','slow-raw','first-frame','reconnect','malformed','clipboard','apple','apple-failure','vnc33','deinit','terminal-error','resize-release','first-frame-timeout','resize-timeout']:
     selected = next((arg.split('=', 1)[1] for arg in sys.argv if arg.startswith('--case=')), None)
     if selected and mode != selected: continue
     if '--resize-only' in sys.argv and mode!='resize-timeout': continue

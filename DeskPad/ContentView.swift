@@ -279,7 +279,10 @@ private struct SessionView: View {
                         } description: {
                             Text(sessionDescription)
                         } actions: {
-                            if case .failed = session.state {
+                            if session.state == .ended {
+                                Button("다시 연결") { session.connect(to: connection, password: password) }
+                                    .buttonStyle(.borderedProminent)
+                            } else if case .failed = session.state {
                                 Button("다시 시도") { session.connect(to: connection, password: password) }
                                     .buttonStyle(.borderedProminent)
                             }
@@ -348,6 +351,10 @@ private struct SessionView: View {
                 }
             }
             .onChange(of: session.state) { _, newState in
+                switch newState {
+                case .ended, .failed, .disconnected: keyboardController.dismiss()
+                default: break
+                }
                 if case .connected = newState {
                     do {
                         try store.markConnected(connection)
@@ -372,6 +379,7 @@ private struct SessionView: View {
     private var sessionDescription: String {
         switch session.state {
         case .failed(let message): message
+        case .ended: "화면 공유가 중지되었거나 네트워크 연결이 끊어졌을 수 있습니다. Mac의 화면 공유 설정과 네트워크 상태를 확인한 뒤 다시 연결해 주세요."
         case .connecting, .handshaking, .authenticating, .initializing: "서버 응답을 기다리고 있습니다."
         case .connected: "첫 번째 화면 업데이트를 기다리고 있습니다."
         case .disconnected: "연결이 종료되었습니다."
@@ -404,7 +412,7 @@ private extension VNCSessionModel {
         case .failed: "exclamationmark.triangle"
         case .connecting, .handshaking, .authenticating, .initializing: "network"
         case .connected: "display"
-        case .disconnected: "wifi.slash"
+        case .disconnected, .ended: "wifi.slash"
         }
     }
 
