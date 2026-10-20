@@ -19,6 +19,8 @@ actor AppleHPDatagramTransport {
     private let videoFeedback: HighPerformanceSRTCPSender
     private let videoSSRC: UInt32
     private var heartbeatTask: Task<Void, Never>?
+    private let inbox = AppleHPDatagramInbox()
+    private var receiverTask: Task<Void, Never>?
 
     init(offer: AppleHPMediaOffer, pipeline: HighPerformanceMediaPipeline, onPlaying: @escaping () async -> Void) throws {
         self.pipeline = pipeline; self.onPlaying = onPlaying
@@ -32,11 +34,25 @@ actor AppleHPDatagramTransport {
     }
     func start(host: String, port: UInt16) throws {
         guard port < UInt16.max else { throw HighPerformanceSRTPError.malformedPacket }
-        for i in 0..<2 {
-            let socket = try AppleHPUDPSocket(remoteIPv4: host, port: port + UInt16(i)) { data in
-                Task { await self.consume(data, stream: i) }
+        guard active, sockets.isEmpty, receiverTask == nil else { throw HighPerformanceSRTPError.malformedPacket }
+        do {
+            for i in 0..<2 {
+                let inbox = self.inbox
+                let socket = try AppleHPUDPSocket(remoteIPv4: host, port: port + UInt16(i)) { data in
+                    inbox.submit(data, stream: i)
+                }
+                sockets.append(socket)
             }
-            sockets.append(socket)
+        } catch {
+            close()
+            throw error
+        }
+        let packets = inbox.packets
+        receiverTask = Task { [weak self] in
+            for await packet in packets {
+                guard !Task.isCancelled else { break }
+                await self?.consume(packet.data, stream: packet.stream)
+            }
         }
         heartbeatTask = Task {
             while !Task.isCancelled {
@@ -58,6 +74,8 @@ actor AppleHPDatagramTransport {
     }
     func close() {
         active = false
+        inbox.finish()
+        receiverTask?.cancel(); receiverTask = nil
         heartbeatTask?.cancel(); heartbeatTask = nil
         for socket in sockets { socket.close() }
         sockets.removeAll()
