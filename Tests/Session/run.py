@@ -53,9 +53,38 @@ def serve_disconnect(listener, mode, marker):
                 c.sendall(b'\x03\0\0\0'+struct.pack('>I',8)+b'retry-ok')
                 while c.recv(1024): pass
 
+def serve_blackframe(listener, mode):
+    fallback = mode in ('apple-black-fallback', 'apple-black-both')
+    apple = mode != 'standard-black'
+    for attempt in range(2 if fallback else 1):
+        c,_ = listener.accept()
+        with c:
+            c.settimeout(5)
+            banner = b'RFB 003.889\n' if apple else b'RFB 003.008\n'
+            c.sendall(banner); assert exact(c,12)==banner
+            c.sendall(b'\x01\x01'); assert exact(c,1)==b'\x01'
+            c.sendall(b'\0'*4); assert exact(c,1)==(b'\xc1' if apple else b'\x01')
+            c.sendall(struct.pack('>HH',2,2)+b'\0'*16+struct.pack('>I',0))
+            if apple: exact(c,66)
+            fmt=exact(c,20)
+            assert fmt[4] == (32 if attempt else 16), 'fallback must renegotiate full color once'
+            count=struct.unpack('>H',exact(c,4)[2:])[0]; exact(c,count*4); exact(c,10)
+            w = 1 if mode=='apple-black-partial' else 2
+            pixel = b'\0\0' if attempt==0 else (b'\0'*4 if mode=='apple-black-both' else b'\0\0\xff\0')
+            c.sendall(b'\0\0\0\x01'+struct.pack('>HHHHi',0,0,w,2,0)+pixel*(w*2))
+            if fallback and attempt==0:
+                expect_closed(c, 'black first frame must close before retry')
+            else:
+                exact(c,10)
+                c.sendall(b'\x03\0\0\0'+struct.pack('>I',8)+b'black-ok')
+                while c.recv(1024): pass
+
 def serve(listener, mode, marker):
     stage = 'setup'
     try:
+        if mode in ('apple-black-fallback','apple-black-both','apple-black-partial','standard-black'):
+            serve_blackframe(listener,mode)
+            return
         if mode in ('remote-close','remote-reset','remote-payload-close'):
             serve_disconnect(listener,mode,marker)
             return

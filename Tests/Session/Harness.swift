@@ -18,7 +18,7 @@ import Foundation
             }
         }
         func signalServer() throws { try Data().write(to: marker) }
-        func connect() { model.connect(to: SavedConnection(id: UUID(), name: "Test", host: "127.0.0.1", port: port, username: ["apple", "apple-failure"].contains(mode) ? "alice" : "", lastConnected: nil), password: ["apple", "apple-failure", "vnc33"].contains(mode) ? "secret" : nil, colorQuality: mode == "rgb565" ? .lowLatency : .fullColor) }
+        func connect() { model.connect(to: SavedConnection(id: UUID(), name: "Test", host: "127.0.0.1", port: port, username: ["apple", "apple-failure"].contains(mode) ? "alice" : "", lastConnected: nil), password: ["apple", "apple-failure", "vnc33"].contains(mode) ? "secret" : nil, colorQuality: (mode == "rgb565" || mode.contains("black")) ? .lowLatency : .fullColor) }
         if mode == "deinit" {
             weak var probe: VNCSessionModel?
             do {

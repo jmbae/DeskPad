@@ -26,6 +26,8 @@ nonisolated enum VNCControlDiagnostics {
 }
 #endif
 
+private struct RFBAppleBlackFirstFrame: Error {}
+
 enum VNCConnectionState: Equatable {
     case disconnected
     case connecting
@@ -68,6 +70,7 @@ final class VNCSessionModel {
     private(set) var screenWidth = 0
     private(set) var screenHeight = 0
     private(set) var errorDetails: String?
+    private(set) var usingCompatibleColor = false
 
     private(set) var receivedClipboard: String?
     private(set) var clipboardError: String?
@@ -97,14 +100,40 @@ final class VNCSessionModel {
         self.client = client
         state = .connecting
         sessionTask = Task { [weak self] in
-            do {
-                try await client.run()
-            } catch is CancellationError {
-                // Explicit disconnect already resets the model; input failures retain their error.
-            } catch {
-                self?.fail(error, generation: generation)
+            var activeClient = client
+            var didRetry = false
+            while !Task.isCancelled {
+                do {
+                    try await activeClient.run()
+                    await activeClient.close()
+                    return
+                } catch is RFBAppleBlackFirstFrame {
+                    if self?.generation == generation {
+                        // Retire queued input before closing its transport so a
+                        // stale write failure cannot terminate the replacement.
+                        self?.inputQueue.cancel()
+                    }
+                    await activeClient.close()
+                    guard !didRetry, !Task.isCancelled, let model = self, model.generation == generation else { return }
+                    didRetry = true
+                    let replacement = RFBClient(host: savedConnection.host, port: savedConnection.port,
+                        username: savedConnection.username, password: password, pixelFormat: .rgb888,
+                        model: model, generation: generation)
+                    self?.remoteCursor = nil
+                    self?.usingCompatibleColor = true
+                    self?.client = replacement
+                    self?.state = .connecting
+                    activeClient = replacement
+                } catch is CancellationError {
+                    await activeClient.close()
+                    return
+                } catch {
+                    self?.fail(error, generation: generation)
+                    await activeClient.close()
+                    return
+                }
             }
-            await client.close()
+            await activeClient.close()
         }
     }
 
@@ -127,6 +156,7 @@ final class VNCSessionModel {
         screenWidth = 0
         screenHeight = 0
         errorDetails = nil
+        usingCompatibleColor = false
         receivedClipboard = nil
         clipboardError = nil
         state = .disconnected
@@ -335,6 +365,7 @@ private actor RFBClient {
     private let queue = DispatchQueue(label: "DeskPad.RFBTransport")
     private var connection: NWConnection?
     private var pixels = Data()
+    private var publishedFrame = false
     private var width = 0
     private var height = 0
     private let maximumPixels = RFBFramebufferLimits.maximumPixels
@@ -842,6 +873,7 @@ private actor RFBClient {
         #endif
         var resized = false
         var pixelsChanged = false
+        var completeDesktopDecoded = false
         let header = try await readExactly(3)
         let rectangleCount = Int(header.readUInt16(at: 1))
         guard rectangleCount <= 4096 else {
@@ -987,6 +1019,7 @@ private actor RFBClient {
                 height = newHeight
                 pixels = Data(repeating: 0, count: width * height * 4)
                 hasFrame = false
+                completeDesktopDecoded = false
                 resized = true
                 armFirstFrameTimeout()
                 await model?.setScreen(width: width, height: height, framebuffer: Data(), generation: generation)
@@ -994,7 +1027,19 @@ private actor RFBClient {
                 throw ClientError.invalidServerMessage("지원하지 않는 인코딩 \(encoding).")
             }
         }
-        if hasFrame && pixelsChanged { await model?.setFramebuffer(pixels, generation: generation) }
+        if hasFrame && pixelsChanged {
+            if !publishedFrame, completeDesktopDecoded, usesAppleExtensions, pixelFormat == .rgb565,
+               pixels.withUnsafeBytes({ raw in
+                   let bytes = raw.bindMemory(to: UInt8.self)
+                   return stride(from: 0, to: bytes.count, by: 4).allSatisfy {
+                       bytes[$0] == 0 && bytes[$0 + 1] == 0 && bytes[$0 + 2] == 0
+                   }
+               }) {
+                throw RFBAppleBlackFirstFrame()
+            }
+            publishedFrame = true
+            await model?.setFramebuffer(pixels, generation: generation)
+        }
         #if DEBUG
         VNCControlDiagnostics.logger.notice("frame update complete rectangles=\(rectangleCount) elapsed_ms=\(Int(Date().timeIntervalSince(updateStarted) * 1_000))")
         #endif
