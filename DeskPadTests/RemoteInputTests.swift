@@ -3,6 +3,91 @@ import XCTest
 
 @MainActor
 final class RemoteInputTests: XCTestCase {
+    func testDefaultScrollSensitivityDoublesPreviousRate() {
+        let view = RemoteDesktopUIView()
+        let pan = StubPan()
+        pan.testState = .began
+        pan.testTranslation = CGPoint(x: 0, y: 20)
+        var masks: [UInt8] = []
+        view.onPointer = { _, mask in masks.append(mask) }
+        _ = view.perform(NSSelectorFromString("handleScroll:"), with: pan)
+        XCTAssertEqual(masks, [8, 0, 8, 0])
+    }
+
+    func testScrollSensitivityChoicesPreserveDirectionAndReleaseWheelButtons() {
+        for (sensitivity, count) in [(RemoteScrollSensitivity.half, 1), (.normal, 2), (.double, 4), (.triple, 6)] {
+            let view = RemoteDesktopUIView()
+            view.scrollSensitivity = sensitivity
+            let pan = StubPan()
+            pan.testState = .began
+            pan.testTranslation = CGPoint(x: 0, y: -40)
+            var masks: [UInt8] = []
+            view.onPointer = { _, mask in masks.append(mask) }
+            _ = view.perform(NSSelectorFromString("handleScroll:"), with: pan)
+            XCTAssertEqual(masks, Array(repeating: [UInt8(16), 0], count: count).flatMap { $0 })
+        }
+    }
+
+    func testScrollFractionsResetBetweenGesturesAndSensitivityChanges() {
+        let view = RemoteDesktopUIView()
+        let pan = StubPan()
+        var masks: [UInt8] = []
+        view.onPointer = { _, mask in masks.append(mask) }
+        func scroll(_ state: UIGestureRecognizer.State, _ delta: CGFloat) {
+            pan.testState = state
+            pan.testTranslation = CGPoint(x: 0, y: delta)
+            _ = view.perform(NSSelectorFromString("handleScroll:"), with: pan)
+        }
+        scroll(.began, 6)
+        scroll(.changed, 4)
+        XCTAssertEqual(masks, [8, 0], "Small deltas accumulate within a gesture")
+        masks.removeAll()
+        for terminal in [UIGestureRecognizer.State.ended, .cancelled, .failed] {
+            scroll(.began, 6)
+            scroll(terminal, 0)
+            scroll(.began, 4)
+            XCTAssertTrue(masks.isEmpty)
+        }
+        view.scrollSensitivity = .normal
+        scroll(.changed, 16)
+        XCTAssertTrue(masks.isEmpty, "Changing sensitivity discards old fractional movement")
+        scroll(.changed, 4)
+        XCTAssertEqual(masks, [8, 0])
+    }
+
+    func testScrollRejectsNonFiniteAndBoundsHugeInput() {
+        let view = RemoteDesktopUIView()
+        let pan = StubPan()
+        pan.testState = .changed
+        var masks: [UInt8] = []
+        view.onPointer = { _, mask in masks.append(mask) }
+        for delta in [CGFloat.nan, .infinity, -.infinity] {
+            pan.testTranslation = CGPoint(x: 0, y: delta)
+            _ = view.perform(NSSelectorFromString("handleScroll:"), with: pan)
+        }
+        XCTAssertTrue(masks.isEmpty)
+        pan.testTranslation = CGPoint(x: 0, y: CGFloat.greatestFiniteMagnitude)
+        _ = view.perform(NSSelectorFromString("handleScroll:"), with: pan)
+        XCTAssertEqual(masks.count, 64)
+    }
+
+    func testIndependentScrollSourcesDoNotShareRemainders() {
+        let view = RemoteDesktopUIView()
+        let direct = StubPan(), indirect = StubPan()
+        var masks: [UInt8] = []
+        view.onPointer = { _, mask in masks.append(mask) }
+        for pan in [direct, indirect] {
+            pan.testState = .began
+            pan.testTranslation = CGPoint(x: 0, y: 6)
+            _ = view.perform(NSSelectorFromString("handleScroll:"), with: pan)
+        }
+        XCTAssertTrue(masks.isEmpty)
+        direct.testState = .changed
+        direct.testTranslation = CGPoint(x: 0, y: 4)
+        _ = view.perform(NSSelectorFromString("handleScroll:"), with: direct)
+        XCTAssertEqual(masks, [8, 0])
+    }
+
     func testRemoteSurfaceUsesNativePointerWithoutAdditionalMarker() {
         let view = RemoteDesktopUIView(frame: CGRect(x: 0, y: 0, width: 200, height: 200))
         view.desktopSize = CGSize(width: 400, height: 200)
@@ -239,10 +324,70 @@ final class RemoteInputTests: XCTestCase {
         view.deleteBackward()
         view.unmarkText()
         XCTAssertTrue(keys.isEmpty)
-        XCTAssertTrue(view.handlesDirectly(code: .keyboardDeleteOrBackspace, modifiers: []))
+        XCTAssertFalse(view.handlesDirectly(code: .keyboardDeleteOrBackspace, modifiers: []))
         view.deleteBackward()
         XCTAssertEqual(keys, [0xff08])
     }
+    func testNavigationAndClickInvalidateUnmarkedInputContext() {
+        let view = RemoteDesktopUIView()
+        let delegate = InputBoundaryDelegate()
+        view.inputDelegate = delegate
+        view.keyDown(code: .keyboardLeftShift, keysym: 0xffe1)
+        XCTAssertEqual(delegate.changes, 0)
+        view.keyDown(code: .keyboardLeftArrow, keysym: 0xff51)
+        XCTAssertEqual(delegate.changes, 1)
+        view.pointer(.zero)
+        view.pointer(.zero, mask: 8) // Wheel events must not reset composition.
+        view.pointer(.zero, mask: 0)
+        XCTAssertEqual(delegate.changes, 1)
+        view.pointer(.zero, mask: 1)
+        XCTAssertEqual(delegate.changes, 2)
+        view.pointer(CGPoint(x: 1, y: 1), mask: 1)
+        view.pointer(.zero, mask: 0)
+        XCTAssertEqual(delegate.changes, 2)
+    }
+
+    func testMarkedCompositionCommitsBeforePointerButtonDown() {
+        let view = RemoteDesktopUIView()
+        var events: [String] = []
+        view.onKey = { events.append("key:\($0):\($1)") }
+        view.onPointer = { _, mask in events.append("pointer:\(mask)") }
+        view.setMarkedText("때", selectedRange: NSRange(location: 1, length: 0))
+        view.pointer(.zero, mask: 1)
+        XCTAssertEqual(events, ["key:16823628:true", "key:16823628:false", "pointer:1"])
+    }
+
+    func testHardwareKoreanBackspaceUsesUIKitWithoutMarkedText() {
+        let view = RemoteDesktopUIView()
+        XCTAssertNil(view.markedTextRange)
+        XCTAssertFalse(view.handlesDirectly(code: .keyboardDeleteOrBackspace, modifiers: []))
+        XCTAssertFalse(view.handlesDirectly(code: .keyboardDeleteOrBackspace, modifiers: [.shift]))
+        for modifier: UIKeyModifierFlags in [.control, .alternate, .command] {
+            XCTAssertTrue(view.handlesDirectly(code: .keyboardDeleteOrBackspace, modifiers: modifier))
+        }
+        var events: [String] = []
+        view.onKey = { events.append("\($0):\($1)") }
+        // UIKit's observed hardware Korean replacement sequence: 때 → ㄸ → 때.
+        view.insertText("때")
+        view.deleteBackward()
+        view.insertText("ㄸ")
+        view.deleteBackward()
+        view.insertText("때")
+        let symbols: [UInt32] = [0x0100B54C, 0xFF08, 0x01003138, 0xFF08, 0x0100B54C]
+        XCTAssertEqual(events, symbols.flatMap { ["\($0):true", "\($0):false"] })
+    }
+
+    func testUIKitBackspaceStillDeletesRemoteContentWithoutLocalText() {
+        let view = RemoteDesktopUIView()
+        var events: [String] = []
+        view.onKey = { events.append("\($0):\($1)") }
+        XCTAssertTrue(view.hasText)
+        view.deleteBackward()
+        view.insertText("a")
+        view.deleteBackward()
+        XCTAssertEqual(events, ["65288:true", "65288:false", "97:true", "97:false", "65288:true", "65288:false"])
+    }
+
     func testShortcutCommitsCompositionBeforePressingControl() {
         let view = RemoteDesktopUIView()
         var events: [String] = []
@@ -293,4 +438,14 @@ private final class StubHover: UIHoverGestureRecognizer {
     var testLocation = CGPoint.zero
     override var state: UIGestureRecognizer.State { get { testState } set { testState = newValue } }
     override func location(in view: UIView?) -> CGPoint { testLocation }
+}
+
+@MainActor
+private final class InputBoundaryDelegate: NSObject, UITextInputDelegate {
+    var changes = 0
+    func conversationContext(_ context: UIConversationContext?, didChange textInput: (any UITextInput)?) {}
+    func selectionWillChange(_ textInput: (any UITextInput)?) {}
+    func selectionDidChange(_ textInput: (any UITextInput)?) {}
+    func textWillChange(_ textInput: (any UITextInput)?) {}
+    func textDidChange(_ textInput: (any UITextInput)?) { changes += 1 }
 }

@@ -4,6 +4,7 @@ import Observation
 
 struct ContentView: View {
     @AppStorage("deskpadColorQuality") private var colorQuality = VNCColorQuality.lowLatency
+    @AppStorage("deskpadScrollSensitivity") private var scrollSensitivity = RemoteScrollSensitivity.double
     @State private var store = ConnectionStore()
     @State private var editingConnection: SavedConnection?
     @State private var isAddingConnection = false
@@ -56,8 +57,10 @@ struct ContentView: View {
                 ToolbarItem(placement: .topBarTrailing) {
                     Menu {
                         ColorQualityPicker(selection: $colorQuality)
+                        Divider()
+                        ScrollSensitivityPicker(selection: $scrollSensitivity)
                     } label: {
-                        Label("화면 모드: \(colorQuality.title)", systemImage: "speedometer")
+                        Label("화면 및 스크롤 설정", systemImage: "speedometer")
                     }
                 }
                 ToolbarItem(placement: .topBarTrailing) {
@@ -249,6 +252,7 @@ private struct ConnectionEditor: View {
 
 private struct SessionView: View {
     @AppStorage("deskpadColorQuality") private var colorQuality = VNCColorQuality.lowLatency
+    @AppStorage("deskpadScrollSensitivity") private var scrollSensitivity = RemoteScrollSensitivity.double
     @Environment(\.dismiss) private var dismiss
     @State private var session = VNCSessionModel()
     @State private var keyboardController = RemoteKeyboardController()
@@ -282,6 +286,7 @@ private struct SessionView: View {
                             size: CGSize(width: session.screenWidth, height: session.screenHeight),
                             remoteCursor: session.remoteCursor,
                             playback: session.highPerformancePlayback,
+                            scrollSensitivity: scrollSensitivity,
                             onKey: { session.sendKey(keysym: $0, pressed: $1) },
                             onPointer: { point, mask in session.sendPointer(x: Int(point.x), y: Int(point.y), buttonMask: mask) })
                             .background(.black)
@@ -344,7 +349,12 @@ private struct SessionView: View {
                         } label: { Label("클립보드", systemImage: "doc.on.clipboard") }
                         Menu {
                             ColorQualityPicker(selection: $colorQuality)
+                            if session.usingCompatibleColor {
+                                Text("검은 화면을 감지해 호환 색상으로 연결했습니다. 전송량이 늘어날 수 있습니다.")
+                            }
                             Text("모드를 바꾸면 다시 연결합니다.")
+                            Divider()
+                            ScrollSensitivityPicker(selection: $scrollSensitivity)
                             Divider()
                             Button("화면에 맞추기") { keyboardController.inputView?.resetViewport() }
                             Button("실제 크기") { keyboardController.inputView?.actualSize() }
@@ -352,6 +362,11 @@ private struct SessionView: View {
                             Text("핀치 확대 · 세 손가락 화면 이동")
                             Text("두 손가락 스크롤 · 두 손가락 탭 오른쪽 클릭")
                         } label: { Label("화면 보기", systemImage: "arrow.up.left.and.arrow.down.right") }
+                        if session.usingCompatibleColor {
+                            Text("호환 색상")
+                                .font(.caption)
+                                .accessibilityLabel("검은 화면 복구를 위해 호환 색상으로 연결됨")
+                        }
                         Text("\(session.screenWidth) × \(session.screenHeight)")
                             .font(.caption.monospacedDigit())
                             .foregroundStyle(.secondary)
@@ -442,6 +457,7 @@ private struct RemoteDesktopSurface: UIViewRepresentable {
     let size: CGSize
     let remoteCursor: RFBCursorShape?
     let playback: HighPerformancePlayback?
+    let scrollSensitivity: RemoteScrollSensitivity
     let onKey: (UInt32, Bool) -> Void
     let onPointer: (CGPoint, UInt8) -> Void
     final class Coordinator {
@@ -463,6 +479,7 @@ private struct RemoteDesktopSurface: UIViewRepresentable {
         view.videoLayer = playback?.videoLayer
         view.desktopSize = size
         view.remoteCursor = remoteCursor
+        view.scrollSensitivity = scrollSensitivity
         view.onKey = onKey
         view.onPointer = onPointer
         controller.inputView = view
@@ -510,5 +527,18 @@ private extension VNCColorQuality {
         case .lowLatency: "색상 정밀도를 낮춰 반응 속도를 우선합니다. 사진과 그라데이션 표현이 달라질 수 있으며, 네트워크 상태에 따라 지연이 발생할 수 있습니다."
         case .fullColor: "색상 손실 없이 화면을 전송합니다. 화면 변화가 크면 전송량과 지연이 늘어날 수 있습니다."
         }
+    }
+}
+
+private struct ScrollSensitivityPicker: View {
+    @Binding var selection: RemoteScrollSensitivity
+
+    var body: some View {
+        Picker("스크롤 감도", selection: $selection) {
+            ForEach(RemoteScrollSensitivity.allCases, id: \.self) { sensitivity in
+                Text(sensitivity.title).tag(sensitivity)
+            }
+        }
+        Text("두 손가락 · 트랙패드 · 마우스 휠에 즉시 적용됩니다.")
     }
 }

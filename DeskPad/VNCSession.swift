@@ -26,6 +26,8 @@ nonisolated enum VNCControlDiagnostics {
 }
 #endif
 
+private struct RFBAppleBlackFirstFrame: Error {}
+
 enum VNCConnectionState: Equatable {
     case disconnected
     case connecting
@@ -74,6 +76,7 @@ final class VNCSessionModel {
     private(set) var screenWidth = 0
     private(set) var screenHeight = 0
     private(set) var errorDetails: String?
+    private(set) var usingCompatibleColor = false
 
     private(set) var receivedClipboard: String?
     private(set) var clipboardError: String?
@@ -103,14 +106,40 @@ final class VNCSessionModel {
         self.client = client
         state = .connecting
         sessionTask = Task { [weak self] in
-            do {
-                try await client.run()
-            } catch is CancellationError {
-                // Explicit disconnect already resets the model; input failures retain their error.
-            } catch {
-                self?.fail(error, generation: generation)
+            var activeClient = client
+            var didRetry = false
+            while !Task.isCancelled {
+                do {
+                    try await activeClient.run()
+                    await activeClient.close()
+                    return
+                } catch is RFBAppleBlackFirstFrame {
+                    if self?.generation == generation {
+                        // Retire queued input before closing its transport so a
+                        // stale write failure cannot terminate the replacement.
+                        self?.inputQueue.cancel()
+                    }
+                    await activeClient.close()
+                    guard !didRetry, !Task.isCancelled, let model = self, model.generation == generation else { return }
+                    didRetry = true
+                    let replacement = RFBClient(host: savedConnection.host, port: savedConnection.port,
+                        username: savedConnection.username, password: password, pixelFormat: .rgb888,
+                        model: model, generation: generation)
+                    self?.remoteCursor = nil
+                    self?.usingCompatibleColor = true
+                    self?.client = replacement
+                    self?.state = .connecting
+                    activeClient = replacement
+                } catch is CancellationError {
+                    await activeClient.close()
+                    return
+                } catch {
+                    self?.fail(error, generation: generation)
+                    await activeClient.close()
+                    return
+                }
             }
-            await client.close()
+            await activeClient.close()
         }
     }
 
@@ -134,6 +163,7 @@ final class VNCSessionModel {
         screenWidth = 0
         screenHeight = 0
         errorDetails = nil
+        usingCompatibleColor = false
         receivedClipboard = nil
         clipboardError = nil
         state = .disconnected
@@ -231,6 +261,17 @@ final class VNCSessionModel {
 
     fileprivate func setFramebuffer(_ framebuffer: Data, generation: UUID) {
         guard self.generation == generation else { return }
+        #if DEBUG
+        if state == .initializing {
+            let containsColor = framebuffer.withUnsafeBytes { raw in
+                let bytes = raw.bindMemory(to: UInt8.self)
+                return stride(from: 0, to: max(0, bytes.count - 3), by: 4).contains {
+                    bytes[$0] != 0 || bytes[$0 + 1] != 0 || bytes[$0 + 2] != 0
+                }
+            }
+            VNCControlDiagnostics.logger.notice("first framebuffer bytes=\(framebuffer.count) nonblack=\(containsColor)")
+        }
+        #endif
         self.framebuffer = framebuffer
         framebufferRevision &+= 1
         state = .connected
@@ -309,7 +350,7 @@ private actor RFBClient {
             case .invalidDHParameters:
                 return "서버가 잘못된 Apple Diffie–Hellman 인증 데이터를 보냈습니다."
             case .serverRejected(let reason): return "서버가 연결을 거부했습니다: \(reason)"
-            case .invalidScreenSize: return "서버가 허용 범위를 벗어난 화면 크기를 보냈습니다."
+            case .invalidScreenSize: return "전체 화면 크기가 지원 한도(한 변 32,768픽셀, 총 6,400만 픽셀)를 넘었습니다."
             case .unsupportedPixelFormat: return "서버 픽셀 형식 협상에 실패했습니다."
             }
         }
@@ -333,10 +374,10 @@ private actor RFBClient {
     private let queue = DispatchQueue(label: "DeskPad.RFBTransport")
     private var connection: NWConnection?
     private var pixels = Data()
+    private var publishedFrame = false
     private var width = 0
     private var height = 0
-    private let maximumDimension = 8192
-    private let maximumPixels = 32_000_000
+    private let maximumPixels = RFBFramebufferLimits.maximumPixels
     private let responseTimeout: DispatchTimeInterval = .seconds(20)
 
     init(host: String, port: UInt16, username: String, password: String?, pixelFormat: RFBPixelFormat, model: VNCSessionModel, generation: UUID) {
@@ -715,7 +756,7 @@ private actor RFBClient {
     }
 
     private func readExactly(_ count: Int, timeoutEnabled: Bool = true, receiveTimeout: DispatchTimeInterval = .seconds(20)) async throws -> Data {
-        guard count >= 0, count <= 128 * 1024 * 1024 else {
+        guard count >= 0, count <= RFBFramebufferLimits.maximumPayloadBytes else {
             throw ClientError.invalidServerMessage("요청된 데이터 길이가 허용 범위를 벗어났습니다.")
         }
         try Task.checkCancellation()
@@ -976,6 +1017,7 @@ private actor RFBClient {
         #endif
         var resized = false
         var pixelsChanged = false
+        var completeDesktopDecoded = false
         let header = try await readExactly(3)
         let rectangleCount = Int(header.readUInt16(at: 1))
         guard rectangleCount <= 4096 else {
@@ -1017,10 +1059,11 @@ private actor RFBClient {
                     firstFrameTimeout = nil
                     armFirstFrameTimeout(seconds: receiveSeconds)
                 }
-                let raw = try await readExactly(dataLength.partialValue, receiveTimeout: .seconds(receiveSeconds))
+                try await receiveRawRows(x: x, y: y, width: rectWidth, height: rectHeight, receiveSeconds: receiveSeconds)
+                completeDesktopDecoded = completeDesktopDecoded || (x == 0 && y == 0 && rectWidth == width && rectHeight == height)
                 #if DEBUG
                 let elapsedMilliseconds = Int(Date().timeIntervalSince(rawReadStarted) * 1_000)
-                VNCControlDiagnostics.logger.notice("raw read complete bytes=\(raw.count) elapsed_ms=\(elapsedMilliseconds)")
+                VNCControlDiagnostics.logger.notice("raw read complete bytes=\(dataLength.partialValue) elapsed_ms=\(elapsedMilliseconds)")
                 #endif
                 if rectWidth > 0 && rectHeight > 0 {
                     hasFrame = true
@@ -1028,7 +1071,6 @@ private actor RFBClient {
                     firstFrameTimeout = nil
                 }
                 pixelsChanged = pixelsChanged || (rectWidth > 0 && rectHeight > 0)
-                copyRaw(raw, x: x, y: y, width: rectWidth, height: rectHeight)
             case 16:
                 guard rectWidth > 0, rectHeight > 0, rectWidth <= width, rectHeight <= height,
                       x <= width - rectWidth, y <= height - rectHeight else {
@@ -1059,8 +1101,15 @@ private actor RFBClient {
                 #if DEBUG
                 VNCControlDiagnostics.logger.notice("zrle decode complete elapsed_ms=\(Int(Date().timeIntervalSince(decodeStarted) * 1_000))")
                 #endif
-                RFBPixelCopy.copy(rgba, into: &pixels, destinationWidth: width, x: x, y: y,
-                                  width: rectWidth, height: rectHeight, sourceIsRGBA: true)
+                if x == 0, y == 0, rectWidth == width, rectHeight == height {
+                    // Adopt full-frame decoder storage instead of duplicating a
+                    // large desktop while the previous UI snapshot is alive.
+                    pixels = rgba
+                    completeDesktopDecoded = true
+                } else {
+                    RFBPixelCopy.copy(rgba, into: &pixels, destinationWidth: width, x: x, y: y,
+                                      width: rectWidth, height: rectHeight, sourceIsRGBA: true)
+                }
                 hasFrame = true
                 pixelsChanged = true
                 firstFrameTimeout?.cancel()
@@ -1116,6 +1165,7 @@ private actor RFBClient {
                 height = newHeight
                 pixels = Data(repeating: 0, count: width * height * 4)
                 hasFrame = false
+                completeDesktopDecoded = false
                 resized = true
                 armFirstFrameTimeout()
                 await model?.setScreen(width: width, height: height, framebuffer: Data(), generation: generation)
@@ -1123,7 +1173,19 @@ private actor RFBClient {
                 throw ClientError.invalidServerMessage("지원하지 않는 인코딩 \(encoding).")
             }
         }
-        if hasFrame && pixelsChanged { await model?.setFramebuffer(pixels, generation: generation) }
+        if hasFrame && pixelsChanged {
+            if !publishedFrame, completeDesktopDecoded, usesAppleExtensions, pixelFormat == .rgb565,
+               pixels.withUnsafeBytes({ raw in
+                   let bytes = raw.bindMemory(to: UInt8.self)
+                   return stride(from: 0, to: bytes.count, by: 4).allSatisfy {
+                       bytes[$0] == 0 && bytes[$0 + 1] == 0 && bytes[$0 + 2] == 0
+                   }
+               }) {
+                throw RFBAppleBlackFirstFrame()
+            }
+            publishedFrame = true
+            await model?.setFramebuffer(pixels, generation: generation)
+        }
         #if DEBUG
         VNCControlDiagnostics.logger.notice("frame update complete rectangles=\(rectangleCount) elapsed_ms=\(Int(Date().timeIntervalSince(updateStarted) * 1_000))")
         #endif
@@ -1131,12 +1193,45 @@ private actor RFBClient {
     }
 
     private func validateDimensions(width: Int, height: Int) throws {
-        guard width > 0, height > 0, width <= maximumDimension, height <= maximumDimension else {
+        guard RFBFramebufferLimits.contains(width: width, height: height) else {
             throw ClientError.invalidScreenSize
         }
-        let product = width.multipliedReportingOverflow(by: height)
-        guard !product.overflow, product.partialValue <= maximumPixels else {
-            throw ClientError.invalidScreenSize
+    }
+
+    /// Decode bounded row groups into the framebuffer rather than allocating the
+    /// entire Raw rectangle. A single deadline covers every chunk and pixel copy.
+    private func receiveRawRows(x: Int, y: Int, width rectWidth: Int, height rectHeight: Int,
+                                receiveSeconds: Int) async throws {
+        guard rectWidth > 0, rectHeight > 0 else { return }
+        let rowBytes = rectWidth * pixelFormat.bytesPerPixel
+        let chunkByteLimit = 1024 * 1024
+        guard rowBytes > 0, rowBytes <= chunkByteLimit else {
+            throw ClientError.invalidServerMessage("Raw 행 크기가 허용 범위를 넘었습니다.")
+        }
+        let rowsPerChunk = chunkByteLimit / rowBytes
+        let deadline = ContinuousClock.now + .seconds(receiveSeconds)
+        let timeout = DispatchWorkItem { [timeoutState, connection] in
+            timeoutState.markExpired()
+            connection?.cancel()
+        }
+        queue.asyncAfter(deadline: .now() + .seconds(receiveSeconds), execute: timeout)
+        defer { timeout.cancel() }
+        var row = 0
+        while row < rectHeight {
+            try Task.checkCancellation()
+            guard ContinuousClock.now < deadline else {
+                throw ClientError.connection("서버 응답 시간이 초과되었습니다.")
+            }
+            let count = min(rowsPerChunk, rectHeight - row)
+            // The outer timer owns the whole rectangle deadline; chunk reads
+            // must not each gain a fresh transfer allowance.
+            let raw = try await readExactly(count * rowBytes, timeoutEnabled: false)
+            copyRaw(raw, x: x, y: y + row, width: rectWidth, height: count)
+            row += count
+        }
+        try Task.checkCancellation()
+        guard ContinuousClock.now < deadline else {
+            throw ClientError.connection("서버 응답 시간이 초과되었습니다.")
         }
     }
 
