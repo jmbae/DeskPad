@@ -37,7 +37,36 @@ import Foundation
             return
         }
         connect()
-        if mode == "apple-cursor" {
+        if mode == "multi-display" {
+            func checkCorners(width: Int, height: Int) {
+                precondition(model.screenWidth == width && model.screenHeight == height)
+                precondition(model.framebuffer.count == width * height * 4)
+                let points = [(0, 0), (width - 1, 0), (0, height - 1), (width - 1, height - 1)]
+                let colors: [[UInt8]] = [[255,0,0,255], [0,255,0,255], [0,0,255,255], [255,255,255,255]]
+                for ((x, y), color) in zip(points, colors) {
+                    let offset = (y * width + x) * 4
+                    precondition(model.framebuffer[offset..<(offset + 4)] == Data(color), "Large framebuffer corner offset incorrect")
+                }
+            }
+            try await waitUntil("large multi-display ServerInit", seconds: 10) { model.state == .connected }
+            checkCorners(width: 12032, height: 3384)
+            try signalServer()
+            try await waitUntil("large DesktopSize and corner pixels", seconds: 10) {
+                model.state == .connected && model.screenWidth == 10000 && model.screenHeight == 4000
+            }
+            checkCorners(width: 10000, height: 4000)
+        } else if mode == "oversized-init" || mode == "oversized-resize" {
+            if mode == "oversized-resize" {
+                try await waitUntil("valid frame before oversized resize") { model.state == .connected }
+                try signalServer()
+            }
+            try await waitUntil("oversized framebuffer rejected", allowFailure: true) {
+                if case .failed = model.state { return true }; return false
+            }
+            guard case .failed(let message) = model.state else { fatalError("Oversized screen accepted") }
+            precondition(message.contains("화면 크기"), "Wrong failure for oversized screen: \(message)")
+            precondition(model.framebuffer.isEmpty && model.screenWidth == 0 && model.screenHeight == 0)
+        } else if mode == "apple-cursor" {
             try await waitUntil("Apple cursor STORE and frame") { model.state == .connected }
             precondition(model.remoteCursor?.rgba == Data([30,20,10,128]))
             let shape = model.remoteCursor
