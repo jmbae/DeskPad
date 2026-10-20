@@ -44,17 +44,25 @@ final class RemoteDesktopUIView: UIView {
     private var pointerPoint: CGPoint = .zero
     private var scrollRemainder: CGFloat = 0
 
-    func resetViewport() { zoomScale = 1; panOffset = .zero; setNeedsDisplay() }
+    // An immediate local input marker, not a claim about the server cursor shape
+    // or acknowledgement. Separate layers avoid repainting the desktop on hover.
+    private let pointerMarker = CAShapeLayer()
+    private let pointerOutline = CAShapeLayer()
+    private var hasPointerPosition = false
+
+    func resetViewport() { zoomScale = 1; panOffset = .zero; updatePointerMarker(); setNeedsDisplay() }
     func actualSize() {
         guard desktopSize.width > 0, bounds.width > 0 else { return }
         zoomScale = desktopSize.width / calculateDisplayRect().width
         panOffset = CGPoint(x: bounds.midX * (1 - zoomScale), y: bounds.midY * (1 - zoomScale))
+        updatePointerMarker()
         setNeedsDisplay()
     }
     func releaseAllKeys() {
         for key in pressedKeys.values { onKey?(key, false) }
         pressedKeys.removeAll()
         if pointerMask != 0 { pointerMask = 0; onPointer?(pointerPoint, 0) }
+        hidePointerMarker()
         updateComposition(nil, selection: NSRange(location: 0, length: 0))
     }
     func keyDown(code: UIKeyboardHIDUsage, keysym: UInt32) {
@@ -73,7 +81,17 @@ final class RemoteDesktopUIView: UIView {
     }
     private func pointer(_ point: CGPoint, mask: UInt8? = nil) {
         pointerPoint = point
+        let wasPressed = pointerMask & 5 != 0
         if let mask { pointerMask = mask }
+        hasPointerPosition = true
+        updatePointerMarker()
+        if !wasPressed && pointerMask & 5 != 0 {
+            let pulse = CABasicAnimation(keyPath: "transform.scale")
+            pulse.fromValue = 1.6
+            pulse.toValue = 1
+            pulse.duration = 0.25
+            pointerMarker.add(pulse, forKey: "click")
+        }
         onPointer?(point, pointerMask)
     }
     override func resignFirstResponder() -> Bool {
@@ -91,11 +109,13 @@ final class RemoteDesktopUIView: UIView {
 
     /// The remote desktop image to render
     var desktopImage: CGImage? {
-        didSet { setNeedsDisplay() }
+        didSet { if desktopImage == nil { hidePointerMarker() }; setNeedsDisplay() }
     }
 
     /// Remote desktop pixel dimensions for coordinate mapping
-    var desktopSize: CGSize = .zero
+    var desktopSize: CGSize = .zero {
+        didSet { if desktopSize != oldValue { hidePointerMarker() } }
+    }
 
     // Zoom/pan state
     private var zoomScale: CGFloat = 1.0
@@ -119,6 +139,7 @@ final class RemoteDesktopUIView: UIView {
         super.init(frame: frame)
         backgroundColor = .black
         isMultipleTouchEnabled = true
+        setupPointerMarker()
         setupGestureRecognizers()
     }
 
@@ -126,6 +147,7 @@ final class RemoteDesktopUIView: UIView {
         super.init(coder: coder)
         backgroundColor = .black
         isMultipleTouchEnabled = true
+        setupPointerMarker()
         setupGestureRecognizers()
     }
 
@@ -165,6 +187,64 @@ final class RemoteDesktopUIView: UIView {
         UIImage(cgImage: image).draw(in: displayRect)
 
         ctx.restoreGState()
+    }
+
+    private func setupPointerMarker() {
+        clipsToBounds = true
+        pointerMarker.name = "local-input-pointer"
+        let path = UIBezierPath(ovalIn: CGRect(x: -9, y: -9, width: 18, height: 18))
+        for (a, b) in [(CGPoint(x: -14, y: 0), CGPoint(x: -5, y: 0)),
+                       (CGPoint(x: 5, y: 0), CGPoint(x: 14, y: 0)),
+                       (CGPoint(x: 0, y: -14), CGPoint(x: 0, y: -5)),
+                       (CGPoint(x: 0, y: 5), CGPoint(x: 0, y: 14))] {
+            path.move(to: a); path.addLine(to: b)
+        }
+        pointerMarker.path = path.cgPath
+        pointerMarker.fillColor = UIColor.clear.cgColor
+        pointerMarker.strokeColor = UIColor.white.cgColor
+        pointerMarker.lineWidth = 2
+        pointerMarker.isHidden = true
+        pointerOutline.path = path.cgPath
+        pointerOutline.fillColor = UIColor.clear.cgColor
+        pointerOutline.strokeColor = UIColor.black.cgColor
+        pointerOutline.lineWidth = 5
+        // White above black remains visible on both bright and dark desktops.
+        layer.addSublayer(pointerOutline)
+        layer.addSublayer(pointerMarker)
+        pointerOutline.isHidden = true
+    }
+
+    private func hidePointerMarker() {
+        hasPointerPosition = false
+        pointerMarker.removeAllAnimations()
+        pointerMarker.isHidden = true
+        pointerOutline.isHidden = true
+    }
+
+    private func updatePointerMarker() {
+        guard hasPointerPosition, desktopSize.width > 0, desktopSize.height > 0,
+              bounds.width > 0, bounds.height > 0 else { return }
+        let rect = calculateDisplayRect()
+        let point = CGPoint(x: (rect.minX + pointerPoint.x / desktopSize.width * rect.width) * zoomScale + panOffset.x,
+                            y: (rect.minY + pointerPoint.y / desktopSize.height * rect.height) * zoomScale + panOffset.y)
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        pointerMarker.position = point
+        pointerOutline.position = point
+        pointerMarker.isHidden = !bounds.contains(point)
+        pointerOutline.isHidden = pointerMarker.isHidden
+        pointerMarker.strokeColor = (pointerMask & 5 != 0 ? UIColor.systemYellow : UIColor.white).cgColor
+        CATransaction.commit()
+    }
+
+    override func layoutSubviews() {
+        super.layoutSubviews()
+        updatePointerMarker()
+    }
+
+    override func didMoveToWindow() {
+        super.didMoveToWindow()
+        if window == nil { releaseAllKeys() }
     }
 
     // MARK: - Coordinate Mapping
@@ -268,6 +348,10 @@ final class RemoteDesktopUIView: UIView {
     }
 
     @objc private func handleHover(_ recognizer: UIHoverGestureRecognizer) {
+        if recognizer.state == .ended || recognizer.state == .cancelled {
+            hidePointerMarker()
+            return
+        }
         let viewPoint = recognizer.location(in: self)
         let desktopPoint = viewPointToDesktopPoint(viewPoint)
         pointer(desktopPoint)
@@ -311,6 +395,7 @@ final class RemoteDesktopUIView: UIView {
         let delta = recognizer.translation(in: self)
         panOffset.x += delta.x; panOffset.y += delta.y
         recognizer.setTranslation(.zero, in: self)
+        updatePointerMarker()
         setNeedsDisplay()
     }
 
@@ -324,6 +409,7 @@ final class RemoteDesktopUIView: UIView {
             panOffset = CGPoint(x: center.x - (center.x - panOffset.x) * ratio,
                                 y: center.y - (center.y - panOffset.y) * ratio)
             recognizer.scale = 1.0
+            updatePointerMarker()
             setNeedsDisplay()
         }
     }
@@ -332,6 +418,8 @@ final class RemoteDesktopUIView: UIView {
         let translation = recognizer.translation(in: self)
         guard recognizer.state == .began || recognizer.state == .changed else { return }
         pointerPoint = viewPointToDesktopPoint(recognizer.location(in: self))
+        hasPointerPosition = true
+        updatePointerMarker()
         scrollRemainder += translation.y
         while abs(scrollRemainder) >= 20 {
             let mask: UInt8 = scrollRemainder > 0 ? 8 : 16

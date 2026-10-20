@@ -3,6 +3,76 @@ import XCTest
 
 @MainActor
 final class RemoteInputTests: XCTestCase {
+    func testLocalPointerMovesWithoutAFramebufferAndTracksViewport() throws {
+        let view = RemoteDesktopUIView(frame: CGRect(x: 0, y: 0, width: 200, height: 200))
+        view.desktopSize = CGSize(width: 400, height: 200)
+        let hover = StubHover()
+        hover.testLocation = CGPoint(x: 150, y: 125)
+        hover.testState = .changed
+        view.layer.displayIfNeeded()
+        XCTAssertFalse(view.layer.needsDisplay())
+        var sent: CGPoint?
+        view.onPointer = { point, _ in sent = point }
+        _ = view.perform(NSSelectorFromString("handleHover:"), with: hover)
+        let marker = try XCTUnwrap(view.layer.sublayers?.first { $0.name == "local-input-pointer" })
+        XCTAssertNil(view.desktopImage)
+        XCTAssertFalse(view.layer.needsDisplay(), "Pointer movement must not repaint the framebuffer")
+        XCTAssertFalse(marker.isHidden)
+        XCTAssertEqual(sent, CGPoint(x: 300, y: 150))
+        XCTAssertEqual(marker.position, hover.testLocation)
+        view.actualSize()
+        XCTAssertEqual(marker.position, CGPoint(x: 200, y: 150))
+        view.resetViewport()
+        XCTAssertEqual(marker.position, hover.testLocation)
+        view.bounds.size = CGSize(width: 400, height: 400)
+        view.layoutSubviews()
+        XCTAssertEqual(marker.position, CGPoint(x: 300, y: 250))
+        hover.testState = .ended
+        _ = view.perform(NSSelectorFromString("handleHover:"), with: hover)
+        XCTAssertTrue(marker.isHidden)
+    }
+
+    func testLocalPointerPanAndLetterboxClampUseRemoteCoordinates() throws {
+        let view = RemoteDesktopUIView(frame: CGRect(x: 0, y: 0, width: 200, height: 200))
+        view.desktopSize = CGSize(width: 400, height: 200)
+        let hover = StubHover()
+        hover.testLocation = CGPoint(x: 50, y: 10)
+        hover.testState = .changed
+        _ = view.perform(NSSelectorFromString("handleHover:"), with: hover)
+        let marker = try XCTUnwrap(view.layer.sublayers?.first { $0.name == "local-input-pointer" })
+        XCTAssertEqual(marker.position, CGPoint(x: 50, y: 50))
+        let pan = StubPan()
+        pan.testTranslation = CGPoint(x: 20, y: 30)
+        _ = view.perform(NSSelectorFromString("handleViewportPan:"), with: pan)
+        XCTAssertEqual(marker.position, CGPoint(x: 70, y: 80))
+        view.didMoveToWindow()
+        XCTAssertTrue(marker.isHidden)
+    }
+
+    func testLocalPointerClickFeedbackAndSessionReset() throws {
+        let view = RemoteDesktopUIView(frame: CGRect(x: 0, y: 0, width: 200, height: 200))
+        view.desktopSize = CGSize(width: 200, height: 200)
+        let pan = StubPan()
+        pan.testLocation = CGPoint(x: 90, y: 100)
+        pan.testState = .began
+        _ = view.perform(NSSelectorFromString("handleDrag:"), with: pan)
+        let marker = try XCTUnwrap(view.layer.sublayers?.first { $0.name == "local-input-pointer" } as? CAShapeLayer)
+        XCTAssertFalse(marker.isHidden)
+        XCTAssertEqual(marker.strokeColor, UIColor.systemYellow.cgColor)
+        XCTAssertNotNil(marker.animation(forKey: "click"))
+        view.releaseAllKeys()
+        XCTAssertTrue(marker.isHidden)
+        XCTAssertNil(marker.animation(forKey: "click"))
+        pan.testState = .began
+        _ = view.perform(NSSelectorFromString("handleDrag:"), with: pan)
+        view.desktopImage = nil
+        XCTAssertTrue(marker.isHidden)
+        pan.testState = .changed
+        _ = view.perform(NSSelectorFromString("handleDrag:"), with: pan)
+        view.desktopSize = CGSize(width: 400, height: 200)
+        XCTAssertTrue(marker.isHidden)
+    }
+
     func testSparseDragPressesOriginalPointAndMovesBeforeRelease() {
         let view = RemoteDesktopUIView(frame: CGRect(x: 0, y: 0, width: 200, height: 200))
         view.desktopSize = CGSize(width: 200, height: 200)
@@ -148,4 +218,12 @@ private final class StubPan: UIPanGestureRecognizer {
     override var state: UIGestureRecognizer.State { get { testState } set { testState = newValue } }
     override func location(in view: UIView?) -> CGPoint { testLocation }
     override func translation(in view: UIView?) -> CGPoint { testTranslation }
+}
+
+@MainActor
+private final class StubHover: UIHoverGestureRecognizer {
+    var testState: UIGestureRecognizer.State = .possible
+    var testLocation = CGPoint.zero
+    override var state: UIGestureRecognizer.State { get { testState } set { testState = newValue } }
+    override func location(in view: UIView?) -> CGPoint { testLocation }
 }
