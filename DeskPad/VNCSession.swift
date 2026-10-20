@@ -449,7 +449,13 @@ private actor RFBClient {
         }
 
         await model?.setState(.initializing, generation: generation)
+        #if DEBUG && DESKPAD_APPLE_CLIENT_INIT
+        let sharedFlag: UInt8 = negotiatedMinor == 889 ? 0xC1 : 1
+        try await send(Data([sharedFlag]))
+        VNCControlDiagnostics.logger.notice("Apple ClientInit diagnostic flags=\(sharedFlag)")
+        #else
         try await send(Data([1]))
+        #endif
         let dimensions = try await readExactly(4)
         width = Int(dimensions.readUInt16(at: 0))
         height = Int(dimensions.readUInt16(at: 2))
