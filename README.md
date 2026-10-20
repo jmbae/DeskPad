@@ -39,9 +39,12 @@ The current client supports only the listed authentication types and framebuffer
 
 ## Project structure
 
-- `DeskPad/ContentView.swift`: connection list, connection editor, and remote desktop UI
-- `DeskPad/ConnectionStore.swift`: saved connection metadata and Keychain credentials
-- `DeskPad/VNCSession.swift`: TCP transport, RFB negotiation and messages, authentication, framebuffer updates, and remote input
+- `DeskPad/App/`: app entry point
+- `DeskPad/Connections/`: saved connection metadata and Keychain credentials
+- `DeskPad/Models/`: app data models
+- `DeskPad/UI/`: connection list, connection editor, and remote desktop UI
+- `DeskPad/VNC/`: VNC session, RFB protocol, framebuffer decoding, and input handling
+- `DeskPad/HighPerformance/`: high-performance media transport, security, and playback
 - `DeskPad/Assets.xcassets`: app icon and accent color
 
 ## Contributing
