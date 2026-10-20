@@ -13,7 +13,13 @@ import AudioToolbox
     @Test func nonIDRIntraPictureDisplaysWithFreshDecoder() async throws {
         try await verifyPresentation(Data(base64Encoded: "AAAAAWdkAAqs5BCbARAAAAMAEAAAAwPA8SJRIAAAAAFo6+PLIsAAAAABZ2QACqzkEJsBEAAAAwAQAAADA8DxIlEgAAAAAWjr48siwAAAAAFnZAAKrOQQmwEQAAADABAAAAMDwPEiUSAAAAABaOvjyyLAAAAAAWdkAAqs5BCbARAAAAMAEAAAAwPA8SJRIAAAAAFo6+PLIsAAAAABQYiKAl/XR2aASVfQTk1z5jmPvHTgjF/r6sbkkgyzO6yRs+KFZQaxsC4QJiB7SAfqd4v0U/oQ17LYA4b36OUg1oLsQeZbwph50iw6Zks5wx3oELo+IZqqegid+l9QLevCDpPZph/DsZuKPGynl6dNYNNqsWAjgfrvSLgLt1ULl4NOHmAP6lAGP+M6RteUg6Mm/CQ+/Vg9IKmGOER4mXyDhOhlFnQlInhdv2FgxSgSL/CtrJv8b+9SQlv2l2v4xNoqemg7S+p6E07OVoVsFP+hU1xK02xUboE/czsu/ELWpnKkIZpmQSIHF7Qp+OCUcKGyGRdpyeHRr/TD8RQGNuWuTGcr/8vnMrLvXM0mQ+WCjm8YhEuYelH9ZzHvLySWp6WF1fB1iYEo+Fc4JqOyAk4KEPLd6h77/hacg6hSVxVdjhgjOO+z69ih2CJlRBZbG5Fh0xScq8OIMTh4Xj4jH+E1aw6aNcYkYYgUdFWpSyht00iECVPfiT0YlVUa7s4YVuMPhZcGDAUsSbKsEQFZ3W/bPZc8gie5q42PbaM9Xu9rQgDQ5fyAAge/tQoeNoHB3gbSSmGupcQBH6deQ/Zq/f5pwRTifxg/ZAGF3aPq/DgFS9NMaVaJK7r0sMOV0ylgzDdXapz2FO22o4Mu1jUHZqOT47S6ZoWFAiUY3f6jC5cnRJojjXN/tLVvCQCyNerWbxjB/uQ5XTVL9aI829a+Oc2G/oVWKA4/KtrcKKMUjcWiJ4fhOPx6B8zDKdcpVhVJDNYC6jIyVFpXR1mLjRjaFAR3Xqzk+f5TdiHxnQQmOyj7+Rvyl+yQdEnLc1zZNZDZkXCn0F0QtR9Zccyb3R6ahde3D8tVColIoBms2bVoLkujLusk00CWuNmEbWT7DR+YgfNPo0h9gRoUk/bq6dgF1UD2lzfZvULtYdQPfHaGiV7LQ2pP5DN3oVq0M/K1qgi9VO8YSLrVg5iTanyg/Cai+Kv6Dm9f6YFJdW798uuPXgMO7kjo4MP2SiYtiN6khZbBQrTH3tCbaeYSJExEOYNQRHNjWoYWeGuqCHEt7I6wXoAOOwgRMyiIHtW27jVDx7AbUVz9MaPsB9m0ZnA7Vr0l+sle8Btw6Wml/o/IJKH/MqYg4zU6wRX9+nwP7kMz+FXvtebZjyRXCG9AY0SukKaFODyTG3VCc8fpsSPkmfMTzXml78omuijlnH5IdoyBctDjhmxCpb+1+MD1DpWR4YdG6MUme+ixZUl8sS2OUQEXnaqAYUm6U8KG7dSQdg+uQJGHgmrQkstES086VHlVzJ50KY58DRcKnhY2xqVjmtlOAdLJFivEo82OsS2JoCJBHOjgOjJvgA==")!)
     }
-    private func verifyPresentation(_ frame: Data) async throws {
+    @Test func redHEVCDisplays() async throws {
+        try await verifyPresentation(Data(base64Encoded: "AAAAAUABDAH//wFgAAADAJAAAAMAAAMAHpWYCQAAAAFCAQEBYAAAAwCQAAADAAADAB6gIIEFllZpJMrwFoCAAAADAIAAAA8EAAAAAUQBwXK0IkAAAAABKAGvCGD57pd/9pWf2gUuKNRpBy4=")!, hevc: true)
+    }
+    @Test func red444HEVCDisplays() async throws {
+        try await verifyPresentation(Data(base64Encoded: "AAAAAUABDAH//wQIAAADAJ4IAAADAAAelZgJAAAAAUIBAQQIAAADAJ4IAAADAAAekAQQILLKzSSZXgLQEAAAAwAQAAADAeCAAAAAAUQBwXKGDEIkAAAAASgBrwhg+e6Xf/aVn9oFLijUaQcu")!, hevc: true)
+    }
+    private func verifyPresentation(_ frame: Data, hevc: Bool = false) async throws {
         let playback = HighPerformancePlayback()
         let factory = HighPerformanceSampleFactory()
         let scene = try #require(UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }.first)
@@ -23,7 +29,19 @@ import AudioToolbox
         playback.videoLayer.frame = CGRect(x: 0, y: 0, width: 256, height: 256)
         window.rootViewController!.view.layer.addSublayer(playback.videoLayer)
         defer { playback.reset(); window.isHidden = true }
-        let sample = try #require(try factory.h264AccessUnit(frame, presentationSeconds: 0))
+        let built: CMSampleBuffer?
+        if hevc {
+            let bytes = [UInt8](frame)
+            var starts: [(Int, Int)] = []; var offset = 0
+            while offset + 3 < bytes.count {
+                if Array(bytes[offset..<(offset+4)]) == [0,0,0,1] { starts.append((offset,4)); offset += 4 }
+                else if Array(bytes[offset..<(offset+3)]) == [0,0,1] { starts.append((offset,3)); offset += 3 }
+                else { offset += 1 }
+            }
+            let units = starts.enumerated().map { n,start in Data(bytes[(start.0+start.1)..<(n+1 < starts.count ? starts[n+1].0 : bytes.count)]) }
+            built = try factory.hevcAccessUnit(units, presentationSeconds: 0)
+        } else { built = try factory.h264AccessUnit(frame, presentationSeconds: 0) }
+        let sample = try #require(built)
         #expect(!playback.hasDisplayedVideoFrame)
         try playback.enqueueVideo(sample)
         try playback.start(at: 0, playoutDelay: 0.02)

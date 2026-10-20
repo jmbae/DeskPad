@@ -43,3 +43,23 @@ Do not discard a payload solely because its size is four bytes. Reference protoc
 notes describe PT101 as raw AAC-ELD-SBR without AU headers or RED; the observed
 payload length alone does not distinguish source silence from a heartbeat.
 These silence fixtures do not prove decoding of non-silent Apple server audio.
+
+## Single-picture HEVC
+
+`HighPerformanceMediaPipeline(..., videoPayloadType: 100, videoCodec: .hevc)`
+explicitly selects HEVC. Payload type alone never selects the codec. The bounded
+receiver accepts Apple DONL single NALs, APs (one DONL, no DOND), and FUs (DONL
+in every fragment), with sequence/loss checks and 8 MiB/256 NAL limits. VPS/SPS/PPS
+arrive in-band and create a native HEVC format description. BLA/IDR pictures start
+playback; CRA/RASL recovery and multi-SSRC tiled compositing are unsupported and
+must not be negotiated. Additional video SSRCs fail explicitly.
+
+`Tests/HighPerformanceHEVC/run.sh` checks DON removal, AP/FU assembly, sequence
+wrap/loss, malformed lengths, fragment DON mismatch, and the SR-gated pipeline.
+`red.hevc` and `red444.hevc` are locally generated red64×64 x265 fixtures in
+4:2:0 and4:4:4 respectively, with encoder metadata SEI removed. Generation:
+`ffmpeg -f lavfi -i color=c=red:s=64x64:r=30 -frames:v 1 -c:v libx265
+-x265-params log-level=error:pools=1 -pix_fmt yuv420p -f hevc red.hevc`
+(use `yuv444p` for the other fixture). Actual iOS26.5 simulator display tests pass
+for both profiles. This is not evidence of physical-iPad6K performance or of the
+remote server honoring single-picture negotiation. No AGPL source was copied.

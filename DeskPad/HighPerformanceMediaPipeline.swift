@@ -14,16 +14,19 @@ extension HighPerformancePlayback: HighPerformanceMediaOutput {}
 /// RTP arrival times are never used as A/V timestamps. A session without Sender Reports
 /// remains in bounded preroll instead of playing unsynchronized audio.
 @MainActor final class HighPerformanceMediaPipeline {
+    enum VideoCodec { case h264, hevc }
     enum Failure: Error { case unsupportedStream, tooManyStreams, invalidConfiguration }
     private struct VideoState {
         var depacketizer = AppleHPVideoDepacketizer()
+        var hevcDepacketizer = AppleHPHEVCDepacketizer()
         var expectedSequence: UInt16?
         let factory = HighPerformanceSampleFactory()
     }
-    private struct PendingVideo { let ssrc: UInt32; let timestamp: UInt32; let annexB: Data; let keyframe: Bool }
+    private struct PendingVideo { let ssrc: UInt32; let timestamp: UInt32; let annexB: Data; let keyframe: Bool; var hevcUnits: [Data]? = nil }
     private struct PendingAudio { let ssrc: UInt32; let timestamp: UInt32; let data: Data }
     private let output: any HighPerformanceMediaOutput
     private let audioFactory = HighPerformanceSampleFactory()
+    private let videoCodec: VideoCodec
     private let videoPayloadType: UInt8
     private let videoRate: Double
     private let audioRate: Double
@@ -41,12 +44,13 @@ extension HighPerformancePlayback: HighPerformanceMediaOutput {}
     var pendingAudioCount: Int { pendingAudio.count }
     var pendingVideoCount: Int { pendingVideo.count }
 
-    init(output: any HighPerformanceMediaOutput, videoPayloadType: UInt8 = 100, videoClockRate: Double = 90000,
+    init(output: any HighPerformanceMediaOutput, videoPayloadType: UInt8 = 100, videoCodec: VideoCodec = .h264, videoClockRate: Double = 90000,
          audioClockRate: Double = 48000, audioFramesPerPacket: UInt32 = 480,
          audioSpecificConfig: Data = Data([0xf8, 0xe6, 0x51, 0x32, 0xe0, 0]),
          aggregationFormat: AppleHPVideoDepacketizer.AggregationFormat = .rfc6184) throws {
         // This experimental profile is explicitly AAC-ELD at 48 kHz / 480-frame AUs.
         guard videoPayloadType <= 127, videoPayloadType != 101, videoClockRate == 90000, audioClockRate == 48000, audioFramesPerPacket == 480 else { throw Failure.invalidConfiguration }
+        self.videoCodec = videoCodec
         self.output = output; self.videoPayloadType = videoPayloadType; videoRate = videoClockRate; audioRate = audioClockRate
         audioFrames = audioFramesPerPacket; aggregation = aggregationFormat
         try audioFactory.configureAAC(audioSpecificConfig: audioSpecificConfig)
@@ -69,6 +73,7 @@ extension HighPerformancePlayback: HighPerformanceMediaOutput {}
     /// The caller must reorder a bounded packet window before feeding fragmented video.
     /// This does not composite Apple's multi-SSRC tiled HEVC mode.
     func consumeVideo(_ packet: HighPerformanceRTPPacket) throws {
+        if videoCodec == .hevc { try consumeHEVC(packet); return }
         guard packet.payloadType == videoPayloadType, packet.ssrc != selectedAudio else { throw Failure.unsupportedStream }
         if videos[packet.ssrc] == nil {
             guard videos.count < 4 else { throw Failure.tooManyStreams }
@@ -110,6 +115,38 @@ extension HighPerformancePlayback: HighPerformanceMediaOutput {}
             }
             pendingVideo.append(PendingVideo(ssrc: packet.ssrc, timestamp: timestamp, annexB: annexB(units), keyframe: keyframe))
         }
+        try drain()
+    }
+
+    private func consumeHEVC(_ packet: HighPerformanceRTPPacket) throws {
+        guard packet.payloadType == videoPayloadType, packet.ssrc != selectedAudio else { throw Failure.unsupportedStream }
+        // Tiled HEVC requires cross-SSRC decode ordering/compositing; do not silently
+        // render only tile zero when the server ignores single-picture negotiation.
+        if let selectedVideo, selectedVideo != packet.ssrc { throw Failure.unsupportedStream }
+        if selectedVideo == nil { selectedVideo = packet.ssrc; videos[packet.ssrc] = VideoState() }
+        var state = videos[packet.ssrc]!
+        if let expected = state.expectedSequence, expected != packet.sequenceNumber { loseVideoContinuity() }
+        state.expectedSequence = packet.sequenceNumber &+ 1
+        let units: [Data]?
+        do { units = try state.hevcDepacketizer.append(sequence: packet.sequenceNumber, timestamp: packet.timestamp, marker: packet.marker, payload: packet.payload) }
+        catch { videos[packet.ssrc] = state; loseVideoContinuity(); throw error }
+        videos[packet.ssrc] = state
+        guard let units else { return }
+        let parameters = units.filter { (32...34).contains(Int(($0.first! >> 1) & 63)) }
+        if !parameters.isEmpty { _ = try state.factory.hevcAccessUnit(parameters, presentationSeconds: 0) }
+        let picture = units.filter { ($0.first! >> 1) & 63 < 32 }
+        guard !picture.isEmpty else { return }
+        // Accept BLA/IDR pictures; CRA needs RASL suppression and is deliberately
+        // excluded until that decode-order path is implemented.
+        let keyframe = picture.allSatisfy { (16...20).contains(Int(($0.first! >> 1) & 63)) }
+        if needsKeyframe && !keyframe { return }
+        needsKeyframe = false
+        if pendingVideo.count == 2 {
+            loseVideoContinuity()
+            guard keyframe else { return }
+            needsKeyframe = false
+        }
+        pendingVideo.append(PendingVideo(ssrc: packet.ssrc, timestamp: packet.timestamp, annexB: Data(), keyframe: keyframe, hevcUnits: units))
         try drain()
     }
 
@@ -161,7 +198,10 @@ extension HighPerformancePlayback: HighPerformanceMediaOutput {}
     private func enqueuePending() throws {
         while let video = pendingVideo.first {
             guard let pts = clock.presentationSeconds(ssrc: video.ssrc, timestamp: video.timestamp), let factory = videos[video.ssrc]?.factory else { break }
-            if let sample = try factory.h264AccessUnit(video.annexB, presentationSeconds: pts) {
+            let sample: CMSampleBuffer?
+            if let units = video.hevcUnits { sample = try factory.hevcAccessUnit(units, presentationSeconds: pts) }
+            else { sample = try factory.h264AccessUnit(video.annexB, presentationSeconds: pts) }
+            if let sample {
                 do { try output.enqueueVideo(sample) }
                 catch { loseVideoContinuity(); throw error }
             }

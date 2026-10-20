@@ -10,6 +10,8 @@ enum HighPerformancePlaybackError: Error {
 /// Builds complete, authenticated access units into compressed CMSampleBuffers.
 /// No RTP depacketization is performed here. Confine to one queue/actor.
 final class HighPerformanceSampleFactory {
+    private var hevcParameters: [Int: Data] = [:]
+    private var hevcFormat: CMVideoFormatDescription?
     private var sps: Data?
     private var pps: Data?
     private var videoFormat: CMVideoFormatDescription?
@@ -20,7 +22,7 @@ final class HighPerformanceSampleFactory {
         return CMAudioFormatDescriptionGetStreamBasicDescription(audioFormat)?.pointee
     }
 
-    func reset() { sps = nil; pps = nil; videoFormat = nil; audioFormat = nil }
+    func reset() { hevcParameters.removeAll(); hevcFormat = nil; sps = nil; pps = nil; videoFormat = nil; audioFormat = nil }
 
     /// Wraps MPEG-4 AudioSpecificConfig in an ESDS descriptor for CoreAudio's magic cookie API.
     /// Format parameters are obtained from CoreAudio, never inferred from RTP timestamps.
@@ -67,6 +69,47 @@ final class HighPerformanceSampleFactory {
             formatDescription: audioFormat, sampleCount: 1, presentationTimeStamp: CMTime(seconds: presentationSeconds, preferredTimescale: 1_000_000),
             packetDescriptions: &description, sampleBufferOut: &sample))
         guard let sample else { throw HighPerformancePlaybackError.invalidAccessUnit }
+        return sample
+    }
+
+    /// One complete HEVC AU after authenticated depacketization. Only one picture
+    /// stream is supported; callers must reject multi-SSRC tiled negotiation.
+    func hevcAccessUnit(_ units: [Data], presentationSeconds: Double) throws -> CMSampleBuffer? {
+        guard presentationSeconds.isFinite, !units.isEmpty, units.count <= 256,
+              units.reduce(0, { $0 + $1.count }) <= 8 * 1024 * 1024 else { throw HighPerformancePlaybackError.invalidAccessUnit }
+        var buffer = Data()
+        var hasPicture = false
+        for unit in units {
+            let b = [UInt8](unit.prefix(2))
+            guard unit.count >= 3, b[0] & 128 == 0, b[1] & 7 != 0 else { throw HighPerformancePlaybackError.invalidAccessUnit }
+            let type = Int((b[0] >> 1) & 63)
+            guard type < 48 else { throw HighPerformancePlaybackError.invalidAccessUnit }
+            if (32...34).contains(type) {
+                if hevcParameters[type] != unit { hevcFormat = nil; hevcParameters[type] = unit }
+            } else {
+                hasPicture = hasPicture || type < 32
+                var length = UInt32(unit.count).bigEndian
+                withUnsafeBytes(of: &length) { buffer.append(contentsOf: $0) }
+                buffer.append(unit)
+            }
+        }
+        if hevcFormat == nil, let vps = hevcParameters[32], let sps = hevcParameters[33], let pps = hevcParameters[34] {
+            try vps.withUnsafeBytes { v in try sps.withUnsafeBytes { s in try pps.withUnsafeBytes { p in
+                var pointers = [v.bindMemory(to: UInt8.self).baseAddress!, s.bindMemory(to: UInt8.self).baseAddress!, p.bindMemory(to: UInt8.self).baseAddress!]
+                var sizes = [vps.count, sps.count, pps.count]
+                try requireStatus(CMVideoFormatDescriptionCreateFromHEVCParameterSets(allocator: kCFAllocatorDefault,
+                    parameterSetCount: 3, parameterSetPointers: &pointers, parameterSetSizes: &sizes,
+                    nalUnitHeaderLength: 4, extensions: nil, formatDescriptionOut: &hevcFormat))
+            } } }
+        }
+        guard hasPicture else { return nil }
+        guard let hevcFormat else { throw HighPerformancePlaybackError.missingConfiguration }
+        var timing = CMSampleTimingInfo(duration: .invalid, presentationTimeStamp: CMTime(seconds: presentationSeconds, preferredTimescale: 1_000_000), decodeTimeStamp: .invalid)
+        var size = buffer.count
+        var sample: CMSampleBuffer?
+        try requireStatus(CMSampleBufferCreateReady(allocator: kCFAllocatorDefault, dataBuffer: try makeBlock(buffer),
+            formatDescription: hevcFormat, sampleCount: 1, sampleTimingEntryCount: 1, sampleTimingArray: &timing,
+            sampleSizeEntryCount: 1, sampleSizeArray: &size, sampleBufferOut: &sample))
         return sample
     }
 
@@ -123,8 +166,8 @@ final class HighPerformanceSampleFactory {
     }
 }
 
-/// Native audio and video share one playback clock. Call start only after both
-/// streams have SR-derived timestamps and initial samples. Call reset on reconnect.
+/// Native audio and video share one playback clock. Video can start with its own
+/// SR-derived timestamp; audio joins after its independent SR. Reset on reconnect.
 @MainActor final class HighPerformancePlayback {
     let videoLayer = AVSampleBufferDisplayLayer()
     private let audioRenderer = AVSampleBufferAudioRenderer()
