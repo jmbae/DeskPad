@@ -37,7 +37,17 @@ import Foundation
             return
         }
         connect()
-        if ["remote-close", "remote-reset", "remote-payload-close"].contains(mode) {
+        if mode == "zrle" {
+            try await waitUntil("ZRLE first pixels") { model.state == .connected }
+            precondition(model.framebuffer == Data([0x56, 0x34, 0x12, 255]))
+            try signalServer()
+            try await waitUntil("persistent ZRLE second rectangle") { model.framebuffer == Data([0x54, 0x76, 0x98, 255]) }
+        } else if mode.hasPrefix("zrle-") {
+            try await waitUntil("invalid or stalled ZRLE rejection", seconds: mode == "zrle-timeout" ? 24 : 5, allowFailure: true) {
+                if case .failed = model.state { return true }; return false
+            }
+            precondition(model.framebuffer.isEmpty)
+        } else if ["remote-close", "remote-reset", "remote-payload-close"].contains(mode) {
             if mode == "remote-payload-close" {
                 try await waitUntil("partial first frame") { model.state == .initializing && model.screenWidth == 1 }
             } else {

@@ -297,6 +297,7 @@ private actor RFBClient {
     private weak var model: VNCSessionModel?
     private let generation: UUID
     private let timeoutState = RFBTimeoutState()
+    private let zrleDecoder = RFBZRLEDecoder()
     private var hasFrame = false
     private var firstFrameTimeout: Task<Void, Never>?
     private let queue = DispatchQueue(label: "DeskPad.RFBTransport")
@@ -724,7 +725,8 @@ private actor RFBClient {
 
     private func sendEncodings() async throws {
         var message = Data([2, 0])
-        message.appendUInt16(3)
+        message.appendUInt16(4)
+        message.appendInt32(16)
         message.appendInt32(0)
         message.appendInt32(1)
         message.appendInt32(-223)
@@ -762,6 +764,9 @@ private actor RFBClient {
     }
 
     private func readFramebufferUpdate() async throws -> Bool {
+        #if DEBUG
+        let updateStarted = Date()
+        #endif
         var resized = false
         let header = try await readExactly(3)
         let rectangleCount = Int(header.readUInt16(at: 1))
@@ -806,6 +811,44 @@ private actor RFBClient {
                     firstFrameTimeout = nil
                 }
                 copyRaw(raw, x: x, y: y, width: rectWidth, height: rectHeight)
+            case 16:
+                guard rectWidth > 0, rectHeight > 0, rectWidth <= width, rectHeight <= height,
+                      x <= width - rectWidth, y <= height - rectHeight else {
+                    throw ClientError.invalidServerMessage("ZRLE 사각형이 화면 경계를 벗어났습니다.")
+                }
+                let compressedLength = Int(try await readUInt32())
+                let maximumCompressed = try RFBZRLEDecoder.maximumCompressedLength(width: rectWidth, height: rectHeight)
+                guard compressedLength > 0, compressedLength <= maximumCompressed else {
+                    throw ClientError.invalidServerMessage("ZRLE 압축 길이가 허용 범위를 넘었습니다.")
+                }
+                let receiveSeconds = RFBReceiveBudget.rawSeconds(byteCount: compressedLength)
+                let deadline = ContinuousClock.now + .seconds(receiveSeconds)
+                if !hasFrame {
+                    firstFrameTimeout?.cancel()
+                    firstFrameTimeout = nil
+                    armFirstFrameTimeout(seconds: receiveSeconds)
+                }
+                #if DEBUG
+                let zrleStarted = Date()
+                VNCControlDiagnostics.logger.notice("zrle read begin bytes=\(compressedLength) width=\(rectWidth) height=\(rectHeight)")
+                #endif
+                let compressed = try await readExactly(compressedLength, receiveTimeout: .seconds(receiveSeconds))
+                #if DEBUG
+                let decodeStarted = Date()
+                VNCControlDiagnostics.logger.notice("zrle read complete bytes=\(compressedLength) elapsed_ms=\(Int(decodeStarted.timeIntervalSince(zrleStarted) * 1_000))")
+                #endif
+                let rgba = try zrleDecoder.decode(compressed, width: rectWidth, height: rectHeight, deadline: deadline)
+                #if DEBUG
+                VNCControlDiagnostics.logger.notice("zrle decode complete elapsed_ms=\(Int(Date().timeIntervalSince(decodeStarted) * 1_000))")
+                #endif
+                RFBPixelCopy.copy(rgba, into: &pixels, destinationWidth: width, x: x, y: y,
+                                  width: rectWidth, height: rectHeight, sourceIsRGBA: true)
+                hasFrame = true
+                firstFrameTimeout?.cancel()
+                firstFrameTimeout = nil
+                #if DEBUG
+                VNCControlDiagnostics.logger.notice("zrle frame complete bytes=\(compressedLength) elapsed_ms=\(Int(Date().timeIntervalSince(zrleStarted) * 1_000))")
+                #endif
             case 1:
                 let source = try await readExactly(4)
                 let sourceX = Int(source.readUInt16(at: 0))
@@ -832,6 +875,9 @@ private actor RFBClient {
             }
         }
         if hasFrame { await model?.setFramebuffer(pixels, generation: generation) }
+        #if DEBUG
+        VNCControlDiagnostics.logger.notice("frame update complete rectangles=\(rectangleCount) elapsed_ms=\(Int(Date().timeIntervalSince(updateStarted) * 1_000))")
+        #endif
         return resized
     }
 
@@ -846,18 +892,8 @@ private actor RFBClient {
     }
 
     private func copyRaw(_ source: Data, x: Int, y: Int, width rectWidth: Int, height rectHeight: Int) {
-        guard rectWidth > 0, rectHeight > 0 else { return }
-        for row in 0..<rectHeight {
-            let destinationStart = ((y + row) * width + x) * 4
-            for column in 0..<rectWidth {
-                let sourceOffset = (row * rectWidth + column) * 4
-                let destinationOffset = destinationStart + column * 4
-                pixels[destinationOffset] = source[sourceOffset + 2]
-                pixels[destinationOffset + 1] = source[sourceOffset + 1]
-                pixels[destinationOffset + 2] = source[sourceOffset]
-                pixels[destinationOffset + 3] = 255
-            }
-        }
+        RFBPixelCopy.copy(source, into: &pixels, destinationWidth: width, x: x, y: y,
+                          width: rectWidth, height: rectHeight)
     }
 
     private func copyRectangle(sourceX: Int, sourceY: Int, x: Int, y: Int, width rectWidth: Int, height rectHeight: Int) {

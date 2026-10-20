@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """Standalone real TCP RFB regression suite; no simulator or test target needed."""
-import pathlib, socket, struct, subprocess, sys, tempfile, threading, time
+import pathlib, socket, struct, subprocess, sys, tempfile, threading, time, zlib
 root = pathlib.Path(__file__).resolve().parents[2]
 binary = pathlib.Path(tempfile.mkdtemp(prefix='deskpad-session-')) / 'session-tests'
-subprocess.run(['swiftc', '-parse-as-library', str(root/'DeskPad/ConnectionStore.swift'), str(root/'DeskPad/VNCSession.swift'), str(root/'Tests/Session/Harness.swift'), '-o', str(binary)], check=True)
+subprocess.run(['swiftc', '-parse-as-library', str(root/'DeskPad/ConnectionStore.swift'), str(root/'DeskPad/VNCSession.swift'), str(root/'DeskPad/RFBZRLEDecoder.swift'), str(root/'Tests/Session/Harness.swift'), '-o', str(binary)], check=True)
 def exact(c,n):
     out=b''
     while len(out)<n:
@@ -21,7 +21,8 @@ def serve_disconnect(listener, mode, marker):
             c.sendall(b'\x01\x01'); assert exact(c,1)==b'\x01'
             c.sendall(b'\0'*4); exact(c,1)
             c.sendall(struct.pack('>HH',1,1)+b'\0'*16+struct.pack('>I',0))
-            exact(c,20); count=struct.unpack('>H',exact(c,4)[2:])[0]; exact(c,count*4); exact(c,10)
+            exact(c,20); count=struct.unpack('>H',exact(c,4)[2:])[0]; encodings=struct.unpack('>'+'i'*count,exact(c,count*4)); exact(c,10)
+            if mode.startswith('zrle'): assert encodings[0]==16 and 0 in encodings
             rectangle=b'\0\0\0\x01'+struct.pack('>HHHHi',0,0,1,1,0)
             if attempt==0:
                 if mode=='remote-payload-close':
@@ -83,9 +84,33 @@ def serve(listener, mode, marker):
             c.sendall(b'\0'*4); exact(c,1)
             dimensions=(1024,1024) if mode=='slow-raw' else (1,1)
             c.sendall(struct.pack('>HH',*dimensions)+b'\0'*16+struct.pack('>I',0))
-            exact(c,20); count=struct.unpack('>H',exact(c,4)[2:])[0]; exact(c,count*4); exact(c,10)
+            exact(c,20); count=struct.unpack('>H',exact(c,4)[2:])[0]; encodings=struct.unpack('>'+'i'*count,exact(c,count*4)); exact(c,10)
+            if mode.startswith('zrle'): assert encodings[0]==16 and 0 in encodings
             stage = 'activity'
-            if mode=='slow-raw':
+            if mode=='zrle':
+                compressor=zlib.compressobj()
+                payload=compressor.compress(b'\x01\x12\x34\x56')+compressor.flush(zlib.Z_SYNC_FLUSH)
+                c.sendall(b'\0\0\0\x01'+struct.pack('>HHHHi',0,0,1,1,16)+struct.pack('>I',len(payload))+payload)
+                exact(c,10)
+                deadline=time.monotonic()+5
+                while not marker.exists():
+                    assert time.monotonic()<deadline
+                    time.sleep(.01)
+                payload=compressor.compress(b'\x01\x98\x76\x54')+compressor.flush(zlib.Z_SYNC_FLUSH)
+                c.sendall(b'\0\0\0\x01'+struct.pack('>HHHHi',0,0,1,1,16)+struct.pack('>I',len(payload))+payload)
+                exact(c,10)
+            elif mode in ('zrle-bounds','zrle-length','zrle-bomb','zrle-palette','zrle-timeout'):
+                c.sendall(b'\0\0\0\x01'+struct.pack('>HHHHi',1 if mode=='zrle-bounds' else 0,0,1,1,16))
+                if mode=='zrle-length': c.sendall(struct.pack('>I',100_000_000))
+                elif mode=='zrle-timeout':
+                    c.settimeout(25)
+                    c.sendall(struct.pack('>I',64)+b'\x78')
+                elif mode!='zrle-bounds':
+                    compressor=zlib.compressobj()
+                    data=b'\0'*1_000_000 if mode=='zrle-bomb' else b'\x82'+b'\0'*6+b'\x02'
+                    payload=compressor.compress(data)+compressor.flush(zlib.Z_SYNC_FLUSH)
+                    c.sendall(struct.pack('>I',len(payload))+payload)
+            elif mode=='slow-raw':
                 c.sendall(b'\0\0\0\x01'+struct.pack('>HHHHi',0,0,1024,1024,0))
                 # A valid payload may take longer than the small-message deadline.
                 time.sleep(21)
@@ -147,11 +172,11 @@ def serve(listener, mode, marker):
         if stage != 'activity' or mode not in ('terminal-error','first-frame-timeout','resize-timeout'):
             errors.append(AssertionError(f'{mode}: unexpected disconnect before all protocol assertions completed: {error}'))
     except Exception as error: errors.append(error)
-for mode in ['remote-close','remote-reset','remote-payload-close','slow-raw','first-frame','reconnect','malformed','clipboard','apple','apple-failure','vnc33','deinit','terminal-error','resize-release','first-frame-timeout','resize-timeout']:
+for mode in ['zrle','zrle-bounds','zrle-length','zrle-bomb','zrle-palette','zrle-timeout','remote-close','remote-reset','remote-payload-close','slow-raw','first-frame','reconnect','malformed','clipboard','apple','apple-failure','vnc33','deinit','terminal-error','resize-release','first-frame-timeout','resize-timeout']:
     selected = next((arg.split('=', 1)[1] for arg in sys.argv if arg.startswith('--case=')), None)
     if selected and mode != selected: continue
     if '--resize-only' in sys.argv and mode!='resize-timeout': continue
-    if '--quick' in sys.argv and mode in ('slow-raw','first-frame-timeout','resize-timeout'): continue
+    if '--quick' in sys.argv and mode in ('zrle-timeout','slow-raw','first-frame-timeout','resize-timeout'): continue
     with socket.socket() as listener:
         listener.bind(('127.0.0.1',0)); listener.listen(); listener.settimeout(3)
         marker=binary.parent / f'{mode}-ready'
