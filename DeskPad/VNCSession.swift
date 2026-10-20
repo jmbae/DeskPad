@@ -363,7 +363,12 @@ private actor RFBClient {
               serverMinor >= 3 else {
             throw ClientError.invalidServerMessage("버전 문자열이 올바르지 않습니다.")
         }
+        #if DEBUG && DESKPAD_APPLE_VERSION
+        let negotiatedMinor: UInt16 = serverMinor == 889 ? 889 : (serverMinor >= 8 ? 8 : (serverMinor >= 7 ? 7 : 3))
+        VNCControlDiagnostics.logger.notice("Apple version diagnostic negotiated_minor=\(negotiatedMinor)")
+        #else
         let negotiatedMinor: UInt16 = serverMinor >= 8 ? 8 : (serverMinor >= 7 ? 7 : 3)
+        #endif
         let version = String(format: "RFB 003.%03d\n", negotiatedMinor)
         try await send(Data(version.utf8))
 
