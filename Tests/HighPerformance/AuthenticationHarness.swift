@@ -33,7 +33,7 @@ import CommonCrypto
         let pkcs1 = SecKeyCopyExternalRepresentation(publicKey, &error)! as Data
         let algorithm = Data([0x30,13,6,9,42,134,72,134,247,13,1,1,1,5,0])
         let spki = tlv(0x30, algorithm + tlv(3, Data([0]) + pkcs1))
-        let response = Data([1,0,0,0,UInt8(spki.count >> 8),UInt8(spki.count & 255)]) + spki + Data([0])
+        let response = Data([0,1,0,0,UInt8(spki.count >> 8),UInt8(spki.count & 255)]) + spki + Data([1])
         let size = response.count
         let prefix = Data([0,0,UInt8(size >> 8),UInt8(size & 255)])
         var reads = [prefix, response, Data(repeating: 0, count: 8)]

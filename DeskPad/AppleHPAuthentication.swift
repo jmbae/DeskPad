@@ -58,11 +58,11 @@ enum AppleHPAuthentication {
 
     static func publicKeyDER(_ response: Data) throws -> Data {
         let bytes = [UInt8](response)
-        guard bytes.count >= 7, Array(bytes.prefix(4)) == [1, 0, 0, 0] else {
+        guard bytes.count >= 7, Array(bytes.prefix(2)) == [0, 1] else {
             throw Failure.malformedResponse
         }
-        let length = Int(bytes[4]) << 8 | Int(bytes[5])
-        guard length > 0, length <= 8185, bytes.count == length + 7, bytes.last == 0 else {
+        let length = bytes[2..<6].reduce(0) { ($0 << 8) | Int($1) }
+        guard length > 0, length <= 8185, bytes.count == length + 7 else {
             throw Failure.malformedResponse
         }
         return Data(bytes[6..<(6 + length)])
