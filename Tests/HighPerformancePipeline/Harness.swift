@@ -10,6 +10,11 @@ import CoreMedia
 }
 @main struct Harness {
  @MainActor static func main() throws {
+    precondition(HighPerformanceH264Recovery.isIntraPicture([Data([0x61,0xb0])])) // first_mb=0, slice_type=2
+    precondition(!HighPerformanceH264Recovery.isIntraPicture([Data([0x61,0xc0])])) // P slice
+    precondition(!HighPerformanceH264Recovery.isIntraPicture([Data([0x61,0xb0]),Data([0x61,0xc0])]))
+    precondition(!HighPerformanceH264Recovery.isIntraPicture([Data([0x61,0])])) // truncated ue(v)
+    precondition(!HighPerformanceH264Recovery.isIntraPicture([Data([0x61,0x4c])])) // no first slice
     let sink=Sink();let pipeline=try HighPerformanceMediaPipeline(output:sink)
     let frame=try Data(contentsOf:URL(fileURLWithPath:CommandLine.arguments[1]))
     let b=Array(frame);var units:[Data]=[];var starts:[(Int,Int)]=[];var i=0

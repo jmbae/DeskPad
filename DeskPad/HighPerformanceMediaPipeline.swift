@@ -98,7 +98,7 @@ extension HighPerformancePlayback: HighPerformanceMediaOutput {}
             guard packet.ssrc == selectedVideo else { return }
             let parameters = units.filter { $0.first.map { ($0 & 31) == 7 || ($0 & 31) == 8 } ?? false }
             if !parameters.isEmpty { _ = try state.factory.h264AccessUnit(annexB(parameters), presentationSeconds: 0) }
-            let keyframe = units.contains { $0.first.map { $0 & 31 == 5 } ?? false }
+            let keyframe = HighPerformanceH264Recovery.isIntraPicture(units)
             let hasSlice = units.contains { $0.first.map { (1...5).contains($0 & 31) } ?? false }
             if !hasSlice { _ = try state.factory.h264AccessUnit(annexB(units), presentationSeconds: 0); return }
             if needsKeyframe && !keyframe { return }
@@ -183,5 +183,54 @@ extension HighPerformancePlayback: HighPerformanceMediaOutput {}
         var data = Data()
         for unit in units { data.append(contentsOf: [0, 0, 0, 1]); data.append(unit) }
         return data
+    }
+}
+
+/// Checks the first two H.264 slice-header ue(v) fields, not the NAL type alone.
+/// A complete intra picture can bootstrap Apple's non-IDR stream. This does not
+/// assert that subsequent open-GOP pictures never reference pictures before it.
+enum HighPerformanceH264Recovery {
+    static func isIntraPicture(_ units: [Data]) -> Bool {
+        var hasFirstSlice = false
+        var hasSlice = false
+        for unit in units {
+            guard let header = unit.first, header & 0x80 == 0 else { return false }
+            let type = header & 31
+            guard (1...5).contains(type) else { continue }
+            guard type == 1 || type == 5 else { return false } // Partitioned slices unsupported.
+            var rbsp: [UInt8] = []
+            var zeros = 0
+            for byte in unit.dropFirst().prefix(128) {
+                if zeros == 2 && byte == 3 { zeros = 0; continue }
+                rbsp.append(byte)
+                zeros = byte == 0 ? min(2, zeros + 1) : 0
+            }
+            var bit = 0
+            func readBit() -> UInt32? {
+                guard bit < rbsp.count * 8 else { return nil }
+                defer { bit += 1 }
+                return UInt32((rbsp[bit / 8] >> (7 - bit % 8)) & 1)
+            }
+            func unsignedExpGolomb() -> UInt32? {
+                var leading = 0
+                while true {
+                    guard let value = readBit() else { return nil }
+                    if value == 1 { break }
+                    leading += 1
+                    guard leading < 32 else { return nil }
+                }
+                var suffix: UInt32 = 0
+                for _ in 0..<leading {
+                    guard let value = readBit() else { return nil }
+                    suffix = (suffix << 1) | value
+                }
+                return ((UInt32(1) << leading) - 1) + suffix
+            }
+            guard let firstMB = unsignedExpGolomb(), let sliceType = unsignedExpGolomb(),
+                  sliceType == 2 || sliceType == 7 else { return false }
+            hasFirstSlice = hasFirstSlice || firstMB == 0
+            hasSlice = true
+        }
+        return hasSlice && hasFirstSlice
     }
 }

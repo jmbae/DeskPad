@@ -27,3 +27,19 @@ Audio waits for its independent Sender Report, retaining its NTP offset; obsolet
 late audio preroll is dropped. Native renderer sufficient-data gating is disabled
 because an empty audio renderer must not stall video. `hasDisplayedVideoFrame`
 reports an actual displayed pixel buffer and is distinct from scheduled playback.
+
+`intra-nonidr.h264` is an independently generated type-1 I picture plus SPS/PPS,
+extracted from a seven-frame x264 stream with
+`open-gop=1:keyint=2:min-keyint=2:scenecut=0:bframes=1:aud=1` at 64×64/30 fps.
+A fresh native decoder and the simulator display layer both decode/present it.
+The startup gate checks every VCL slice's bounded Exp-Golomb `slice_type` for I
+(2 or 7), requires a slice beginning at macroblock zero, and rejects mixed P/I,
+truncated headers and unsupported partitioned slices. This establishes decoding
+of the intra picture itself, not arbitrary subsequent open-GOP dependency safety.
+
+Simulator tests independently confirm that both four-byte payloads `00000000`
+and `00683400` decode with ASC `f8e65132e000` to 480 zero-valued PCM frames.
+Do not discard a payload solely because its size is four bytes. Reference protocol
+notes describe PT101 as raw AAC-ELD-SBR without AU headers or RED; the observed
+payload length alone does not distinguish source silence from a heartbeat.
+These silence fixtures do not prove decoding of non-silent Apple server audio.
