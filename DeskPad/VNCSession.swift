@@ -872,10 +872,10 @@ private actor RFBClient {
                     firstFrameTimeout = nil
                     armFirstFrameTimeout(seconds: receiveSeconds)
                 }
-                let raw = try await readExactly(dataLength.partialValue, receiveTimeout: .seconds(receiveSeconds))
+                try await receiveRawRows(x: x, y: y, width: rectWidth, height: rectHeight, receiveSeconds: receiveSeconds)
                 #if DEBUG
                 let elapsedMilliseconds = Int(Date().timeIntervalSince(rawReadStarted) * 1_000)
-                VNCControlDiagnostics.logger.notice("raw read complete bytes=\(raw.count) elapsed_ms=\(elapsedMilliseconds)")
+                VNCControlDiagnostics.logger.notice("raw read complete bytes=\(dataLength.partialValue) elapsed_ms=\(elapsedMilliseconds)")
                 #endif
                 if rectWidth > 0 && rectHeight > 0 {
                     hasFrame = true
@@ -883,7 +883,6 @@ private actor RFBClient {
                     firstFrameTimeout = nil
                 }
                 pixelsChanged = pixelsChanged || (rectWidth > 0 && rectHeight > 0)
-                copyRaw(raw, x: x, y: y, width: rectWidth, height: rectHeight)
             case 16:
                 guard rectWidth > 0, rectHeight > 0, rectWidth <= width, rectHeight <= height,
                       x <= width - rectWidth, y <= height - rectHeight else {
@@ -994,6 +993,43 @@ private actor RFBClient {
     private func validateDimensions(width: Int, height: Int) throws {
         guard RFBFramebufferLimits.contains(width: width, height: height) else {
             throw ClientError.invalidScreenSize
+        }
+    }
+
+    /// Decode bounded row groups into the framebuffer rather than allocating the
+    /// entire Raw rectangle. A single deadline covers every chunk and pixel copy.
+    private func receiveRawRows(x: Int, y: Int, width rectWidth: Int, height rectHeight: Int,
+                                receiveSeconds: Int) async throws {
+        guard rectWidth > 0, rectHeight > 0 else { return }
+        let rowBytes = rectWidth * pixelFormat.bytesPerPixel
+        let chunkByteLimit = 1024 * 1024
+        guard rowBytes > 0, rowBytes <= chunkByteLimit else {
+            throw ClientError.invalidServerMessage("Raw 행 크기가 허용 범위를 넘었습니다.")
+        }
+        let rowsPerChunk = chunkByteLimit / rowBytes
+        let deadline = ContinuousClock.now + .seconds(receiveSeconds)
+        let timeout = DispatchWorkItem { [timeoutState, connection] in
+            timeoutState.markExpired()
+            connection?.cancel()
+        }
+        queue.asyncAfter(deadline: .now() + .seconds(receiveSeconds), execute: timeout)
+        defer { timeout.cancel() }
+        var row = 0
+        while row < rectHeight {
+            try Task.checkCancellation()
+            guard ContinuousClock.now < deadline else {
+                throw ClientError.connection("서버 응답 시간이 초과되었습니다.")
+            }
+            let count = min(rowsPerChunk, rectHeight - row)
+            // The outer timer owns the whole rectangle deadline; chunk reads
+            // must not each gain a fresh transfer allowance.
+            let raw = try await readExactly(count * rowBytes, timeoutEnabled: false)
+            copyRaw(raw, x: x, y: y + row, width: rectWidth, height: count)
+            row += count
+        }
+        try Task.checkCancellation()
+        guard ContinuousClock.now < deadline else {
+            throw ClientError.connection("서버 응답 시간이 초과되었습니다.")
         }
     }
 

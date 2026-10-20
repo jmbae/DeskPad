@@ -123,6 +123,22 @@ import Foundation
             precondition(model.framebuffer == Data([255, 0, 0, 255]))
             model.sendKey(keysym: 66, pressed: true)
             try await waitUntil("fresh input after retry") { model.receivedClipboard == "retry-ok" }
+        } else if mode == "raw-chunk-timeout" {
+            try await waitUntil("first frame before chunk deadline test") { model.state == .connected }
+            try await waitUntil("whole Raw rectangle timeout", seconds: 27, allowFailure: true) {
+                if case .failed = model.state { return true }; return false
+            }
+        } else if mode == "raw-chunks" {
+            try await waitUntil("chunked Raw and aligned next message") { model.receivedClipboard == "raw-done" }
+            precondition(model.framebuffer.count == 1031 * 608 * 4)
+            for row in 0..<608 {
+                for column in 0..<1031 {
+                    let offset = (row * 1031 + column) * 4
+                    let expected: [UInt8] = (2..<602).contains(row) && (3..<1028).contains(column)
+                        ? [91, UInt8((row - 2) / 256), UInt8((row - 2) % 256), 255] : [0,0,0,0]
+                    precondition(Array(model.framebuffer[offset..<(offset + 4)]) == expected)
+                }
+            }
         } else if mode == "slow-raw" {
             try await waitUntil("large delayed Raw frame", seconds: 27) { model.state == .connected }
             precondition(model.framebuffer == Data(Array(repeating: [UInt8(255), 0, 0, 255], count: 1024 * 1024).joined()))

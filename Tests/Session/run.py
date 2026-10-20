@@ -90,7 +90,7 @@ def serve(listener, mode, marker):
                 assert c.recv(1)==b'' # Apple sends no following reason length or body.
                 return
             c.sendall(b'\0'*4); assert exact(c,1)==(b'\xc1' if mode=='apple-cursor' else b'\x01')
-            dimensions=(12032,3384) if mode=='multi-display' else ((65535,65535) if mode=='oversized-init' else ((1024,1024) if mode=='slow-raw' else (1,1)))
+            dimensions=(12032,3384) if mode=='multi-display' else ((65535,65535) if mode=='oversized-init' else ((1024,1024) if mode in ('slow-raw','raw-chunk-timeout') else ((1031,608) if mode=='raw-chunks' else (1,1))))
             c.sendall(struct.pack('>HH',*dimensions)+b'\0'*16+struct.pack('>I',0))
             if mode=='oversized-init':
                 expect_closed(c, 'oversized ServerInit must close before requesting pixels')
@@ -203,6 +203,25 @@ def serve(listener, mode, marker):
                     data=b'\0'*1_000_000 if mode=='zrle-bomb' else b'\x82'+b'\0'*6+b'\x02'
                     payload=compressor.compress(data)+compressor.flush(zlib.Z_SYNC_FLUSH)
                     c.sendall(struct.pack('>I',len(payload))+payload)
+            elif mode=='raw-chunks':
+                c.sendall(b'\0\0\0\x01'+struct.pack('>HHHHi',3,2,1025,600,0))
+                for row in range(600):
+                    c.sendall(bytes([row % 256, (row // 256) % 256, 91, 0]) * 1025)
+                exact(c,10)
+                c.sendall(b'\x03\0\0\0'+struct.pack('>I',8)+b'raw-done')
+            elif mode=='raw-chunk-timeout':
+                c.sendall(b'\0\0\0\x01'+struct.pack('>HHHHi',0,0,1,1,0)+b'\0\0\xff\0')
+                exact(c,10)
+                # First frame already published: no first-frame watchdog can mask
+                # the rectangle-wide deadline. A later chunk must not renew it.
+                c.sendall(b'\0\0\0\x01'+struct.pack('>HHHHi',0,0,1024,1024,0)+b'\0'*(1024*1024))
+                started=time.monotonic()
+                time.sleep(13)
+                c.sendall(b'\0'*(1024*1024))
+                c.settimeout(15)
+                assert c.recv(1)==b''
+                assert 22 < time.monotonic()-started < 27
+                return
             elif mode=='slow-raw':
                 c.sendall(b'\0\0\0\x01'+struct.pack('>HHHHi',0,0,1024,1024,0))
                 # A valid payload may take longer than the small-message deadline.
@@ -265,11 +284,11 @@ def serve(listener, mode, marker):
         if stage != 'activity' or mode not in ('terminal-error','first-frame-timeout','resize-timeout'):
             errors.append(AssertionError(f'{mode}: unexpected disconnect before all protocol assertions completed: {error}'))
     except Exception as error: errors.append(error)
-for mode in ['multi-display','oversized-init','oversized-resize','apple-cursor','cursor','rgb565','zrle','zrle-bounds','zrle-length','zrle-bomb','zrle-palette','zrle-timeout','remote-close','remote-reset','remote-payload-close','slow-raw','first-frame','reconnect','malformed','clipboard','apple','apple-failure','vnc33','deinit','terminal-error','resize-release','first-frame-timeout','resize-timeout']:
+for mode in ['raw-chunk-timeout','raw-chunks','multi-display','oversized-init','oversized-resize','apple-cursor','cursor','rgb565','zrle','zrle-bounds','zrle-length','zrle-bomb','zrle-palette','zrle-timeout','remote-close','remote-reset','remote-payload-close','slow-raw','first-frame','reconnect','malformed','clipboard','apple','apple-failure','vnc33','deinit','terminal-error','resize-release','first-frame-timeout','resize-timeout']:
     selected = next((arg.split('=', 1)[1] for arg in sys.argv if arg.startswith('--case=')), None)
     if selected and mode != selected: continue
     if '--resize-only' in sys.argv and mode!='resize-timeout': continue
-    if '--quick' in sys.argv and mode in ('zrle-timeout','slow-raw','first-frame-timeout','resize-timeout'): continue
+    if '--quick' in sys.argv and mode in ('raw-chunk-timeout','zrle-timeout','slow-raw','first-frame-timeout','resize-timeout'): continue
     with socket.socket() as listener:
         listener.bind(('127.0.0.1',0)); listener.listen(); listener.settimeout(3)
         marker=binary.parent / f'{mode}-ready'
