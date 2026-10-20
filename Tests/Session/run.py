@@ -90,7 +90,7 @@ def serve(listener, mode, marker):
                 assert c.recv(1)==b'' # Apple sends no following reason length or body.
                 return
             c.sendall(b'\0'*4); assert exact(c,1)==(b'\xc1' if mode=='apple-cursor' else b'\x01')
-            dimensions=(12032,3384) if mode=='multi-display' else ((65535,65535) if mode=='oversized-init' else ((1024,1024) if mode in ('slow-raw','raw-chunk-timeout') else ((1031,608) if mode=='raw-chunks' else (1,1))))
+            dimensions=(18048,3384) if mode=='multi-display' else ((65535,65535) if mode=='oversized-init' else ((1024,1024) if mode in ('slow-raw','raw-chunk-timeout') else ((1031,608) if mode=='raw-chunks' else (1,1))))
             c.sendall(struct.pack('>HH',*dimensions)+b'\0'*16+struct.pack('>I',0))
             if mode=='oversized-init':
                 expect_closed(c, 'oversized ServerInit must close before requesting pixels')

@@ -5,7 +5,7 @@ import zlib
 /// Keep an explicit pixel budget: accepting every UInt16 geometry can allocate
 /// several gigabytes before the server sends a single pixel.
 nonisolated enum RFBFramebufferLimits {
-    static let maximumDimension = 16_384
+    static let maximumDimension = 32_768
     static let maximumPixels = 64_000_000
     static let maximumPayloadBytes = 256 * 1024 * 1024
 

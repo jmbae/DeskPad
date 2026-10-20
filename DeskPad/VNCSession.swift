@@ -224,6 +224,17 @@ final class VNCSessionModel {
 
     fileprivate func setFramebuffer(_ framebuffer: Data, generation: UUID) {
         guard self.generation == generation else { return }
+        #if DEBUG
+        if state == .initializing {
+            let containsColor = framebuffer.withUnsafeBytes { raw in
+                let bytes = raw.bindMemory(to: UInt8.self)
+                return stride(from: 0, to: max(0, bytes.count - 3), by: 4).contains {
+                    bytes[$0] != 0 || bytes[$0 + 1] != 0 || bytes[$0 + 2] != 0
+                }
+            }
+            VNCControlDiagnostics.logger.notice("first framebuffer bytes=\(framebuffer.count) nonblack=\(containsColor)")
+        }
+        #endif
         self.framebuffer = framebuffer
         framebufferRevision &+= 1
         state = .connected
@@ -302,7 +313,7 @@ private actor RFBClient {
             case .invalidDHParameters:
                 return "서버가 잘못된 Apple Diffie–Hellman 인증 데이터를 보냈습니다."
             case .serverRejected(let reason): return "서버가 연결을 거부했습니다: \(reason)"
-            case .invalidScreenSize: return "전체 화면 크기가 지원 한도(한 변 16,384픽셀, 총 6,400만 픽셀)를 넘었습니다."
+            case .invalidScreenSize: return "전체 화면 크기가 지원 한도(한 변 32,768픽셀, 총 6,400만 픽셀)를 넘었습니다."
             case .unsupportedPixelFormat: return "서버 픽셀 형식 협상에 실패했습니다."
             }
         }

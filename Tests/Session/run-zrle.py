@@ -53,7 +53,7 @@ add('inflate-bomb',1,1,b'\0'*1_000_000,reject=True)
 add('invalid-zlib',1,1,b'',compressed=b'invalid',reject=True)
 add('empty-compressed',1,1,b'',compressed=b'',reject=True)
 add('invalid-dimensions',16384,16384,b'\1'+red,reject=True)
-add('axis-limit',16385,1,b'\1'+red,reject=True)
+add('axis-limit',32769,1,b'\1'+red,reject=True)
 add('pixel-budget-limit',8001,8000,b'\1'+red,reject=True)
 add('zero-width',0,1,b'\1'+red,reject=True)
 add('expired-decode-budget',1,1,b'\1'+red,reject=True,expired=True)
@@ -88,6 +88,8 @@ for fmt,byte_count,shifts,maxima,mid in [('rgb565',2,[11,5,0],[31,63,31],0x8c65)
     cases.append(dict(name=fmt+'-persistent-stream',pixelFormat=fmt,rectangles=rects,reject=False,expired=False))
 w,h=12032,3384
 add('dual-6K-solid-frame',w,h,(b'\1'+red)*(((w+63)//64)*((h+63)//64)),solid=[red[2],red[1],red[0]])
+w,h=18048,3384
+add('triple-6K-solid-frame',w,h,(b'\1'+red)*(((w+63)//64)*((h+63)//64)),solid=[red[2],red[1],red[0]])
 w,h=6016,3384
 add('6K-solid-frame',w,h,(b'\1'+red)*(((w+63)//64)*((h+63)//64)),solid=[red[2],red[1],red[0]])
 # An incompressible frame exercises every raw tile and verifies placement via

@@ -49,7 +49,7 @@ import Foundation
                 }
             }
             try await waitUntil("large multi-display ServerInit", seconds: 10) { model.state == .connected }
-            checkCorners(width: 12032, height: 3384)
+            checkCorners(width: 18048, height: 3384)
             try signalServer()
             try await waitUntil("large DesktopSize and corner pixels", seconds: 10) {
                 model.state == .connected && model.screenWidth == 10000 && model.screenHeight == 4000
