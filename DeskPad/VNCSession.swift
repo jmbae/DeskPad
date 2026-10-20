@@ -108,13 +108,17 @@ final class VNCSessionModel {
                     await activeClient.close()
                     return
                 } catch is RFBAppleBlackFirstFrame {
+                    if self?.generation == generation {
+                        // Retire queued input before closing its transport so a
+                        // stale write failure cannot terminate the replacement.
+                        self?.inputQueue.cancel()
+                    }
                     await activeClient.close()
                     guard !didRetry, !Task.isCancelled, let model = self, model.generation == generation else { return }
                     didRetry = true
                     let replacement = RFBClient(host: savedConnection.host, port: savedConnection.port,
                         username: savedConnection.username, password: password, pixelFormat: .rgb888,
                         model: model, generation: generation)
-                    self?.inputQueue.cancel()
                     self?.remoteCursor = nil
                     self?.usingCompatibleColor = true
                     self?.client = replacement
@@ -1017,6 +1021,7 @@ private actor RFBClient {
                 height = newHeight
                 pixels = Data(repeating: 0, count: width * height * 4)
                 hasFrame = false
+                completeDesktopDecoded = false
                 resized = true
                 armFirstFrameTimeout()
                 await model?.setScreen(width: width, height: height, framebuffer: Data(), generation: generation)

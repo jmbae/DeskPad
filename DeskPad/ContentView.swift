@@ -348,6 +348,9 @@ private struct SessionView: View {
                         } label: { Label("클립보드", systemImage: "doc.on.clipboard") }
                         Menu {
                             ColorQualityPicker(selection: $colorQuality)
+                            if session.usingCompatibleColor {
+                                Text("검은 화면을 감지해 호환 색상으로 연결했습니다. 전송량이 늘어날 수 있습니다.")
+                            }
                             Text("모드를 바꾸면 다시 연결합니다.")
                             Divider()
                             ScrollSensitivityPicker(selection: $scrollSensitivity)
@@ -358,6 +361,11 @@ private struct SessionView: View {
                             Text("핀치 확대 · 세 손가락 화면 이동")
                             Text("두 손가락 스크롤 · 두 손가락 탭 오른쪽 클릭")
                         } label: { Label("화면 보기", systemImage: "arrow.up.left.and.arrow.down.right") }
+                        if session.usingCompatibleColor {
+                            Text("호환 색상")
+                                .font(.caption)
+                                .accessibilityLabel("검은 화면 복구를 위해 호환 색상으로 연결됨")
+                        }
                         Text("\(session.screenWidth) × \(session.screenHeight)")
                             .font(.caption.monospacedDigit())
                             .foregroundStyle(.secondary)
