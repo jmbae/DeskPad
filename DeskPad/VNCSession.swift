@@ -302,7 +302,7 @@ private actor RFBClient {
             case .invalidDHParameters:
                 return "서버가 잘못된 Apple Diffie–Hellman 인증 데이터를 보냈습니다."
             case .serverRejected(let reason): return "서버가 연결을 거부했습니다: \(reason)"
-            case .invalidScreenSize: return "서버가 허용 범위를 벗어난 화면 크기를 보냈습니다."
+            case .invalidScreenSize: return "전체 화면 크기가 지원 한도(한 변 16,384픽셀, 총 6,400만 픽셀)를 넘었습니다."
             case .unsupportedPixelFormat: return "서버 픽셀 형식 협상에 실패했습니다."
             }
         }
@@ -326,8 +326,7 @@ private actor RFBClient {
     private var pixels = Data()
     private var width = 0
     private var height = 0
-    private let maximumDimension = 8192
-    private let maximumPixels = 32_000_000
+    private let maximumPixels = RFBFramebufferLimits.maximumPixels
     private let responseTimeout: DispatchTimeInterval = .seconds(20)
 
     init(host: String, port: UInt16, username: String, password: String?, pixelFormat: RFBPixelFormat, model: VNCSessionModel, generation: UUID) {
@@ -571,7 +570,7 @@ private actor RFBClient {
     }
 
     private func readExactly(_ count: Int, timeoutEnabled: Bool = true, receiveTimeout: DispatchTimeInterval = .seconds(20)) async throws -> Data {
-        guard count >= 0, count <= 128 * 1024 * 1024 else {
+        guard count >= 0, count <= RFBFramebufferLimits.maximumPayloadBytes else {
             throw ClientError.invalidServerMessage("요청된 데이터 길이가 허용 범위를 벗어났습니다.")
         }
         try Task.checkCancellation()
@@ -915,8 +914,14 @@ private actor RFBClient {
                 #if DEBUG
                 VNCControlDiagnostics.logger.notice("zrle decode complete elapsed_ms=\(Int(Date().timeIntervalSince(decodeStarted) * 1_000))")
                 #endif
-                RFBPixelCopy.copy(rgba, into: &pixels, destinationWidth: width, x: x, y: y,
-                                  width: rectWidth, height: rectHeight, sourceIsRGBA: true)
+                if x == 0, y == 0, rectWidth == width, rectHeight == height {
+                    // Adopt full-frame decoder storage instead of duplicating a
+                    // large desktop while the previous UI snapshot is alive.
+                    pixels = rgba
+                } else {
+                    RFBPixelCopy.copy(rgba, into: &pixels, destinationWidth: width, x: x, y: y,
+                                      width: rectWidth, height: rectHeight, sourceIsRGBA: true)
+                }
                 hasFrame = true
                 pixelsChanged = true
                 firstFrameTimeout?.cancel()
@@ -987,11 +992,7 @@ private actor RFBClient {
     }
 
     private func validateDimensions(width: Int, height: Int) throws {
-        guard width > 0, height > 0, width <= maximumDimension, height <= maximumDimension else {
-            throw ClientError.invalidScreenSize
-        }
-        let product = width.multipliedReportingOverflow(by: height)
-        guard !product.overflow, product.partialValue <= maximumPixels else {
+        guard RFBFramebufferLimits.contains(width: width, height: height) else {
             throw ClientError.invalidScreenSize
         }
     }
