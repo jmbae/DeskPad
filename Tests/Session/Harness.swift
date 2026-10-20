@@ -18,7 +18,7 @@ import Foundation
             }
         }
         func signalServer() throws { try Data().write(to: marker) }
-        func connect() { model.connect(to: SavedConnection(id: UUID(), name: "Test", host: "127.0.0.1", port: port, username: ["apple", "apple-failure"].contains(mode) ? "alice" : "", lastConnected: nil), password: ["apple", "apple-failure", "vnc33"].contains(mode) ? "secret" : nil, colorQuality: mode == "rgb565" ? .lowLatency : .fullColor) }
+        func connect() { model.connect(to: SavedConnection(id: UUID(), name: "Test", host: "127.0.0.1", port: port, username: ["apple", "apple-failure"].contains(mode) ? "alice" : "", lastConnected: nil), password: ["apple", "apple-failure", "vnc33"].contains(mode) ? "secret" : nil, colorQuality: (mode == "rgb565" || mode.contains("black")) ? .lowLatency : .fullColor) }
         if mode == "deinit" {
             weak var probe: VNCSessionModel?
             do {
@@ -37,7 +37,15 @@ import Foundation
             return
         }
         connect()
-        if mode == "multi-display" {
+        if mode.contains("black") {
+            try await waitUntil("black compatibility session") { model.receivedClipboard == "black-ok" }
+            precondition(model.state == .connected)
+            let fallback = mode == "apple-black-fallback" || mode == "apple-black-both"
+            precondition(model.usingCompatibleColor == fallback)
+            precondition(model.framebuffer[0] == (mode == "apple-black-fallback" ? 255 : 0))
+            model.disconnect()
+            precondition(!model.usingCompatibleColor)
+        } else if mode == "multi-display" {
             func checkCorners(width: Int, height: Int) {
                 precondition(model.screenWidth == width && model.screenHeight == height)
                 precondition(model.framebuffer.count == width * height * 4)
