@@ -1,6 +1,22 @@
 import Foundation
 import zlib
 
+/// Bounds apply to the combined desktop, including gaps between monitors.
+/// Keep an explicit pixel budget: accepting every UInt16 geometry can allocate
+/// several gigabytes before the server sends a single pixel.
+nonisolated enum RFBFramebufferLimits {
+    static let maximumDimension = 32_768
+    static let maximumPixels = 64_000_000
+    static let maximumPayloadBytes = 256 * 1024 * 1024
+
+    static func contains(width: Int, height: Int) -> Bool {
+        guard width > 0, height > 0,
+              width <= maximumDimension, height <= maximumDimension else { return false }
+        let pixels = width.multipliedReportingOverflow(by: height)
+        return !pixels.overflow && pixels.partialValue <= maximumPixels
+    }
+}
+
 // Quality changes are negotiated only when opening a new connection.
 nonisolated enum VNCColorQuality: String, CaseIterable, Sendable {
     case fullColor, lowLatency
@@ -81,12 +97,11 @@ nonisolated final class RFBZRLEDecoder {
         let inflated = try maximumInflatedLength(width: width, height: height, pixelFormat: pixelFormat)
         // Deflate overhead allowance, while rejecting huge lengths for tiny
         // rectangles before receiving or allocating their payloads.
-        return min(128 * 1024 * 1024, inflated + inflated / 1000 + 64 * 1024)
+        return min(RFBFramebufferLimits.maximumPayloadBytes, inflated + inflated / 1000 + 64 * 1024)
     }
 
     private static func maximumInflatedLength(width: Int, height: Int, pixelFormat: RFBPixelFormat) throws -> Int {
-        guard width > 0, height > 0, width <= 8192, height <= 8192,
-              width * height <= 32_000_000 else {
+        guard RFBFramebufferLimits.contains(width: width, height: height) else {
             throw DecodeError.invalid("사각형 크기가 허용 범위를 벗어났습니다.")
         }
         let tileCount = ((width + 63) / 64) * ((height + 63) / 64)

@@ -215,8 +215,41 @@ final class RemoteDesktopUIView: UIView {
         ctx.translateBy(x: panOffset.x, y: panOffset.y)
         ctx.scaleBy(x: zoomScale, y: zoomScale)
 
-        // Draw image
-        UIImage(cgImage: image).draw(in: displayRect)
+        // Large multi-monitor desktops can exceed a GPU's single-texture axis
+        // limit. Bound each source image submitted to UIKit, while retaining the
+        // same desktop-to-view mapping and the pan/zoom transform above.
+        let tileDimension = 8192
+        if image.width <= tileDimension && image.height <= tileDimension {
+            UIImage(cgImage: image).draw(in: displayRect)
+        } else {
+            let scaleX = displayRect.width / CGFloat(image.width)
+            let scaleY = displayRect.height / CGFloat(image.height)
+            let visible = ctx.boundingBoxOfClipPath
+            ctx.interpolationQuality = .none
+            ctx.setShouldAntialias(false)
+            for sourceY in stride(from: 0, to: image.height, by: tileDimension) {
+                for sourceX in stride(from: 0, to: image.width, by: tileDimension) {
+                    let source = CGRect(x: sourceX, y: sourceY,
+                        width: min(tileDimension, image.width - sourceX),
+                        height: min(tileDimension, image.height - sourceY))
+                    let destination = CGRect(x: displayRect.minX + source.minX * scaleX,
+                        y: displayRect.minY + source.minY * scaleY,
+                        width: source.width * scaleX, height: source.height * scaleY)
+                    guard destination.intersects(visible), let tile = image.cropping(to: source) else { continue }
+                    // Adjacent tiles meet on fractional device pixels when fit to
+                    // the screen. Give each pixel to exactly one tile, preventing
+                    // translucent seams and a later tile painting over its neighbor.
+                    let device = ctx.convertToDeviceSpace(destination)
+                    let pixelBounds = CGRect(x: device.minX.rounded(), y: device.minY.rounded(),
+                        width: device.maxX.rounded() - device.minX.rounded(),
+                        height: device.maxY.rounded() - device.minY.rounded())
+                    ctx.saveGState()
+                    ctx.clip(to: ctx.convertToUserSpace(pixelBounds))
+                    UIImage(cgImage: tile).draw(in: destination)
+                    ctx.restoreGState()
+                }
+            }
+        }
 
         ctx.restoreGState()
     }
