@@ -63,3 +63,12 @@ wrap/loss, malformed lengths, fragment DON mismatch, and the SR-gated pipeline.
 (use `yuv444p` for the other fixture). Actual iOS26.5 simulator display tests pass
 for both profiles. This is not evidence of physical-iPad6K performance or of the
 remote server honoring single-picture negotiation. No AGPL source was copied.
+
+HEVC packetization defaults to automatic selection from the first complete,
+authenticated VPS/SPS/PPS aggregation packet. Both candidate layouts (no DON at
+offset2; Apple DON at offset4) must consume the exact packet extent with one valid
+base-layer parameter set of each type. Exactly one candidate must succeed;
+ambiguous or incomplete evidence is rejected. Selection remains fixed for the
+SSRC across frames. The observed 88-byte no-DON AP had parameter lengths23/50/7
+at offsets2/27/79, so unconditional Apple DON stripping corrupted this server.
+Tests cover both layouts and subsequent single-NAL parsing without mode changes.

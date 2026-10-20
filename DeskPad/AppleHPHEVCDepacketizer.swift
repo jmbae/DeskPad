@@ -6,9 +6,11 @@ import os
 /// Bounded single-SSRC HEVC receiver. Apple places DONL after every single-NAL
 /// header and every FU header, and once in AP (without per-unit DOND).
 struct AppleHPHEVCDepacketizer {
-    enum Packetization { case rfc7798NoDON, appleDON }
+    enum Packetization { case automatic, rfc7798NoDON, appleDON }
     enum Failure: Error { case malformed, limitExceeded }
-    var packetization: Packetization = .appleDON
+    var packetization: Packetization = .automatic
+    private(set) var detectedPacketization: Packetization?
+    init(packetization: Packetization = .automatic) { self.packetization = packetization }
     private var timestamp: UInt32?
     private var expected: UInt16?
     private var units: [Data] = []
@@ -48,7 +50,21 @@ struct AppleHPHEVCDepacketizer {
             #endif
             guard (3...65535).contains(b.count), b[0] & 128 == 0, b[1] & 7 != 0 else { throw Failure.malformed }
             let type = (b[0] >> 1) & 63
-            let donBytes = packetization == .appleDON ? 2 : 0
+            if packetization == .automatic && detectedPacketization == nil {
+                // Only a complete parameter-set AP may establish framing. Never
+                // infer DON presence from arbitrary compressed slice bytes.
+                guard type == 48 else { throw Failure.malformed }
+                let noDON = Self.parameterAP(b, start: 2)
+                let appleDON = Self.parameterAP(b, start: 4)
+                guard noDON != appleDON else { throw Failure.malformed }
+                detectedPacketization = noDON ? .rfc7798NoDON : .appleDON
+                #if DEBUG
+                let hasDON = detectedPacketization == .appleDON
+                VNCControlDiagnostics.logger.notice("HP HEVC packetization selected apple_don=\(hasDON)")
+                #endif
+            }
+            let selected = packetization == .automatic ? detectedPacketization! : packetization
+            let donBytes = selected == .appleDON ? 2 : 0
             switch type {
             case 0...47:
                 guard fragmentHeader == nil, b.count > 2 + donBytes else { throw Failure.malformed }
@@ -107,6 +123,25 @@ struct AppleHPHEVCDepacketizer {
             return units
         } catch { damaged = true; units = []; fragment = Data(); throw error }
     }
+    /// Require one complete VPS/SPS/PPS set and exact AP extent. Duplicate,
+    /// incomplete, foreign-layer or truncated parameter sets cannot select mode.
+    private static func parameterAP(_ b: [UInt8], start: Int) -> Bool {
+        var cursor = start
+        var types = Set<UInt8>()
+        while cursor < b.count {
+            guard cursor + 2 <= b.count else { return false }
+            let count = Int(b[cursor]) << 8 | Int(b[cursor + 1]); cursor += 2
+            guard count >= 3, count <= b.count - cursor else { return false }
+            let header = b[cursor], second = b[cursor + 1]
+            let type = (header >> 1) & 63
+            guard (32...34).contains(type), header & 0x81 == 0,
+                  second & 0xf8 == 0, second & 7 != 0,
+                  types.insert(type).inserted else { return false }
+            cursor += count
+        }
+        return cursor == b.count && types == Set([32, 33, 34])
+    }
+
     private mutating func add(_ nal: Data) throws {
         let b = [UInt8](nal.prefix(2))
         guard nal.count >= 3, b[0] & 128 == 0, b[1] & 7 != 0, (b[0] >> 1) & 63 < 48 else { throw Failure.malformed }
