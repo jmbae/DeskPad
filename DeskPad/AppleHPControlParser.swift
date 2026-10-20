@@ -12,6 +12,8 @@ struct AppleHPControlParser {
         case rectangle(encoding: Int32, x: UInt16, y: UInt16, width: UInt16, height: UInt16, payload: Data)
         case bell
         case clipboard(Data)
+        // Framed only: an opaque Z_SYNC_FLUSH pasteboard archive, not plain text.
+        case clipboardArchive(promise: UInt8, uncompressedSize: UInt32, compressed: Data)
     }
     private var buffer = Data()
     private var rectanglesRemaining = 0
@@ -82,6 +84,14 @@ struct AppleHPControlParser {
                     guard b.count >= 4 + length else { return events }
                     events.append(.status(flags: u16(b, 4), command: u16(b, 6)))
                     buffer = Data(b.dropFirst(4 + length))
+                case 0x1f:
+                    guard b.count >= 16 else { return events }
+                    let uncompressed = u32(b, 8), compressed = Int(u32(b, 12))
+                    guard uncompressed <= UInt32(Self.limit), compressed <= Self.limit - 16 else { throw Failure.oversized }
+                    guard b.count >= 16 + compressed else { return events }
+                    events.append(.clipboardArchive(promise: b[2], uncompressedSize: uncompressed,
+                                                    compressed: Data(b[16..<(16 + compressed)])))
+                    buffer = Data(b.dropFirst(16 + compressed))
                 case 3:
                     guard b.count >= 8 else { return events }
                     let length = Int(u32(b, 4))

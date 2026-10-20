@@ -11,3 +11,24 @@ Encoding 1010 has more than one schema. Version-2 / kind-2 replies have an 18-by
 Top-level protobuf field 12 is retained as `opaqueField12`, **not AudioSpecificConfig**. Observed bytes `08 04 20 04` do not establish AAC-ELD sample rate, frame size or ASC. These parameters must not be inferred from that field. Audio description scalar semantics are intentionally retained as opaque parsed fields.
 
 The protocol document's little-endian offer flags contradict the existing offer builder's big-endian comment. This reply fixture contains a different status word and provides no evidence to resolve offer flags; changing the offer requires a separately justified integration decision.
+
+## Wire evidence and limits
+
+Offline protocol notes `/tmp/apple_vnc_rfc.md`, §10.3, identify the offer flags
+word at +6 as host/little endian: `screensharingd`'s unswapped word load at
+`0x10003ce84` forwards the value to the agent, which tests bits 1/2/4/8.
+The builder regression test failed with `[0,0,0,5]` and passes with `[5,0,0,0]`.
+Bit 1 advertises first-stream 60 fps support; negotiation success alone does not
+prove the resulting frame rate. No keys or generated offer bytes are logged.
+
+§8.2.1 specifies the 16-byte `0x1f` clipboard header. The parser bounds both
+compressed and declared expanded sizes, frames across records, and emits an
+opaque archive event. It does not decompress or apply clipboard contents.
+§8.3 specifies 1104 STORE/SELECT framing; the SELECT regression verifies that
+zero compressed bytes do not swallow the next message.
+
+1011 remains unsupported: §8.9.4 describes a u32-length TCP DCT codec, whereas
+reference proxy comments describe a u16-length sibling of 1010. This conflicting
+evidence is insufficient to safely guess framing. Do not advertise 1011 until
+its relevant wire variant and decoder are validated. No live connection was
+used for these checks.

@@ -27,9 +27,10 @@ struct AppleHPMediaOffer {
         header[0] = 0x1c
         put16(UInt16(bodySize), into: &header, at: 2)
         put16(3, into: &header, at: 4)
-        // 60 fps first stream + separate cursor. No second video offer.
-        // This scalar is big endian on the wire, including the agent IPC hop.
-        header[9] = 5
+        // Stream 1 supports 60 fps; do not include cursor in the media stream.
+        // Unlike the other header scalars, flags are host/little endian:
+        // screensharingd forwards its unswapped +6 word to the agent.
+        header[6] = 5
         put16(UInt16(audioOffer.count), into: &header, at: 10)
         put16(UInt16(videoOffer.count), into: &header, at: 12)
         var session = UUID().uuid

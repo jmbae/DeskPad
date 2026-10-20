@@ -2,6 +2,8 @@ import Foundation
 @main struct Harness {
     static func rejected(_ body: () throws -> Void) { do { try body(); fatalError("accepted malformed input") } catch {} }
     static func main() throws {
+        let offer = try AppleHPMediaOffer.make()
+        precondition(Array(offer.message[6..<10]) == [5, 0, 0, 0], "offer flags must be host little endian")
         let fixture = try Data(contentsOf: URL(fileURLWithPath: CommandLine.arguments[1]))
         var parser = AppleHPControlParser()
         var events: [AppleHPControlParser.Event] = []
@@ -16,6 +18,23 @@ import Foundation
         let status = Data([20,0,0,4,0,1,0,12])
         let all = try mixed.append(status + fixture + Data([2]))
         precondition(all.count == 3 && mixed.isAtMessageBoundary)
+        let archive = Data([0x1f,0,1,0,0,0,0,0,0,0,0,0,0,0,0,7,120,156,0,0,0,255,255])
+        var clipboard = AppleHPControlParser()
+        var clipboardEvents: [AppleHPControlParser.Event] = []
+        for byte in archive { clipboardEvents += try clipboard.append(Data([byte])) }
+        guard case .clipboardArchive(let promise, let size, let compressed) = clipboardEvents.first else { fatalError("archive missing") }
+        precondition(promise == 1 && size == 0 && compressed.count == 7)
+        precondition(clipboard.isAtMessageBoundary)
+        let afterClipboard = try clipboard.append(Data([2]))
+        precondition(afterClipboard.count == 1)
+        rejected { var p = AppleHPControlParser(); _ = try p.append(Data(archive.dropLast())); try p.finish() }
+        rejected { var p = AppleHPControlParser(); var a = archive; a[8] = 255; _ = try p.append(a) }
+        rejected { var p = AppleHPControlParser(); var a = archive; a[12] = 255; _ = try p.append(a) }
+        let cursorSelect = Data([0,0,0,1]) + Data(repeating: 0, count: 8) + Data([0,0,4,80,0,0,3,232,0,0,0,0])
+        var cursor = AppleHPControlParser()
+        let cursorEvents = try cursor.append(cursorSelect + Data([2]))
+        guard case .rectangle(let encoding, _, _, _, _, let cursorPayload) = cursorEvents.first else { fatalError("cursor missing") }
+        precondition(encoding == 1104 && cursorPayload.count == 8 && cursorEvents.count == 2)
         var rekey = AppleHPControlParser()
         let keyMessage = Data([0,0,0,1]) + Data(repeating: 0, count: 8) + Data([0,0,4,79]) + Data(repeating: 0, count: 36)
         let changed = try rekey.append(keyMessage)
