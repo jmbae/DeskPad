@@ -44,17 +44,29 @@ final class RemoteDesktopUIView: UIView {
     private var pointerPoint: CGPoint = .zero
     private var scrollRemainder: CGFloat = 0
 
-    // An immediate local input marker, not a claim about the server cursor shape
-    // or acknowledgement. Separate layers avoid repainting the desktop on hover.
-    private let pointerMarker = CAShapeLayer()
-    private let pointerOutline = CAShapeLayer()
+    /// The native pointer is preferred; an exact bitmap is used only when UIKit
+    /// cannot represent a server cursor's hotspot. Never draw both at once.
+    var remoteCursor: RFBCursorShape? {
+        didSet {
+            guard remoteCursor != oldValue else { return }
+            cursorPresentation = remoteCursor.map(RemoteCursorPresentation.init)
+            cursorLayer.contents = cursorPresentation?.image
+            pointerInteraction.invalidate()
+            updatePointerMarker()
+        }
+    }
+    private var cursorPresentation: RemoteCursorPresentation?
+    private let cursorLayer = CALayer()
+    private lazy var pointerInteraction = UIPointerInteraction(delegate: self)
     private var hasPointerPosition = false
+    private var hardwarePointerInside = false
 
-    func resetViewport() { zoomScale = 1; panOffset = .zero; updatePointerMarker(); setNeedsDisplay() }
+    func resetViewport() { zoomScale = 1; panOffset = .zero; pointerInteraction.invalidate(); updatePointerMarker(); setNeedsDisplay() }
     func actualSize() {
         guard desktopSize.width > 0, bounds.width > 0 else { return }
         zoomScale = desktopSize.width / calculateDisplayRect().width
         panOffset = CGPoint(x: bounds.midX * (1 - zoomScale), y: bounds.midY * (1 - zoomScale))
+        pointerInteraction.invalidate()
         updatePointerMarker()
         setNeedsDisplay()
     }
@@ -81,17 +93,9 @@ final class RemoteDesktopUIView: UIView {
     }
     private func pointer(_ point: CGPoint, mask: UInt8? = nil) {
         pointerPoint = point
-        let wasPressed = pointerMask & 5 != 0
         if let mask { pointerMask = mask }
         hasPointerPosition = true
         updatePointerMarker()
-        if !wasPressed && pointerMask & 5 != 0 {
-            let pulse = CABasicAnimation(keyPath: "transform.scale")
-            pulse.fromValue = 1.6
-            pulse.toValue = 1
-            pulse.duration = 0.25
-            pointerMarker.add(pulse, forKey: "click")
-        }
         onPointer?(point, pointerMask)
     }
     override func resignFirstResponder() -> Bool {
@@ -114,7 +118,7 @@ final class RemoteDesktopUIView: UIView {
 
     /// Remote desktop pixel dimensions for coordinate mapping
     var desktopSize: CGSize = .zero {
-        didSet { if desktopSize != oldValue { hidePointerMarker() } }
+        didSet { if desktopSize != oldValue { hidePointerMarker(); pointerInteraction.invalidate() } }
     }
 
     // Zoom/pan state
@@ -191,54 +195,48 @@ final class RemoteDesktopUIView: UIView {
 
     private func setupPointerMarker() {
         clipsToBounds = true
-        pointerMarker.name = "local-input-pointer"
-        let path = UIBezierPath(ovalIn: CGRect(x: -9, y: -9, width: 18, height: 18))
-        for (a, b) in [(CGPoint(x: -14, y: 0), CGPoint(x: -5, y: 0)),
-                       (CGPoint(x: 5, y: 0), CGPoint(x: 14, y: 0)),
-                       (CGPoint(x: 0, y: -14), CGPoint(x: 0, y: -5)),
-                       (CGPoint(x: 0, y: 5), CGPoint(x: 0, y: 14))] {
-            path.move(to: a); path.addLine(to: b)
-        }
-        pointerMarker.path = path.cgPath
-        pointerMarker.fillColor = UIColor.clear.cgColor
-        pointerMarker.strokeColor = UIColor.white.cgColor
-        pointerMarker.lineWidth = 2
-        pointerMarker.isHidden = true
-        pointerOutline.path = path.cgPath
-        pointerOutline.fillColor = UIColor.clear.cgColor
-        pointerOutline.strokeColor = UIColor.black.cgColor
-        pointerOutline.lineWidth = 5
-        // White above black remains visible on both bright and dark desktops.
-        layer.addSublayer(pointerOutline)
-        layer.addSublayer(pointerMarker)
-        pointerOutline.isHidden = true
+        cursorLayer.name = "remote-cursor"
+        cursorLayer.anchorPoint = .zero
+        cursorLayer.isHidden = true
+        cursorLayer.magnificationFilter = .nearest
+        layer.addSublayer(cursorLayer)
+        addInteraction(pointerInteraction)
     }
 
     private func hidePointerMarker() {
         hasPointerPosition = false
-        pointerMarker.removeAllAnimations()
-        pointerMarker.isHidden = true
-        pointerOutline.isHidden = true
+        hardwarePointerInside = false
+        cursorLayer.isHidden = true
+    }
+
+    private var visibleDesktopRect: CGRect {
+        let rect = calculateDisplayRect()
+        return CGRect(x: rect.minX * zoomScale + panOffset.x,
+                      y: rect.minY * zoomScale + panOffset.y,
+                      width: rect.width * zoomScale, height: rect.height * zoomScale).intersection(bounds)
     }
 
     private func updatePointerMarker() {
-        guard hasPointerPosition, desktopSize.width > 0, desktopSize.height > 0,
-              bounds.width > 0, bounds.height > 0 else { return }
+        guard hasPointerPosition, let cursor = cursorPresentation,
+              !cursor.isHidden, desktopSize.width > 0, desktopSize.height > 0,
+              bounds.width > 0, bounds.height > 0 else {
+            cursorLayer.isHidden = true
+            return
+        }
         let rect = calculateDisplayRect()
         let point = CGPoint(x: (rect.minX + pointerPoint.x / desktopSize.width * rect.width) * zoomScale + panOffset.x,
                             y: (rect.minY + pointerPoint.y / desktopSize.height * rect.height) * zoomScale + panOffset.y)
         CATransaction.begin()
         CATransaction.setDisableActions(true)
-        pointerMarker.position = point
-        pointerOutline.position = point
-        pointerMarker.isHidden = !bounds.contains(point)
-        pointerOutline.isHidden = pointerMarker.isHidden
-        pointerMarker.strokeColor = (pointerMask & 5 != 0 ? UIColor.systemYellow : UIColor.white).cgColor
+        cursorLayer.bounds = CGRect(origin: .zero, size: cursor.size)
+        cursorLayer.position = CGPoint(x: point.x - cursor.hotspot.x, y: point.y - cursor.hotspot.y)
+        cursorLayer.isHidden = !visibleDesktopRect.contains(point) || (hardwarePointerInside && cursor.nativeShape != nil)
         CATransaction.commit()
     }
 
     override func layoutSubviews() {
         super.layoutSubviews()
+        pointerInteraction.invalidate()
         updatePointerMarker()
     }
 
@@ -353,6 +351,11 @@ final class RemoteDesktopUIView: UIView {
             return
         }
         let viewPoint = recognizer.location(in: self)
+        guard visibleDesktopRect.contains(viewPoint) else {
+            hidePointerMarker()
+            return
+        }
+        hardwarePointerInside = true
         let desktopPoint = viewPointToDesktopPoint(viewPoint)
         pointer(desktopPoint)
     }
@@ -395,6 +398,7 @@ final class RemoteDesktopUIView: UIView {
         let delta = recognizer.translation(in: self)
         panOffset.x += delta.x; panOffset.y += delta.y
         recognizer.setTranslation(.zero, in: self)
+        pointerInteraction.invalidate()
         updatePointerMarker()
         setNeedsDisplay()
     }
@@ -409,6 +413,7 @@ final class RemoteDesktopUIView: UIView {
             panOffset = CGPoint(x: center.x - (center.x - panOffset.x) * ratio,
                                 y: center.y - (center.y - panOffset.y) * ratio)
             recognizer.scale = 1.0
+            pointerInteraction.invalidate()
             updatePointerMarker()
             setNeedsDisplay()
         }
@@ -764,5 +769,24 @@ extension RemoteDesktopUIView: UITextInput {
     var smartInsertDeleteType: UITextSmartInsertDeleteType {
         get { .no }
         set {}
+    }
+}
+
+// MARK: - Native mouse / trackpad cursor
+
+extension RemoteDesktopUIView: UIPointerInteractionDelegate {
+    func pointerInteraction(_ interaction: UIPointerInteraction, regionFor request: UIPointerRegionRequest,
+                            defaultRegion: UIPointerRegion) -> UIPointerRegion? {
+        guard desktopSize.width > 0, desktopSize.height > 0,
+              visibleDesktopRect.contains(request.location) else { return nil }
+        return UIPointerRegion(rect: visibleDesktopRect, identifier: "remote-desktop" as NSString)
+    }
+
+    func pointerInteraction(_ interaction: UIPointerInteraction, styleFor region: UIPointerRegion) -> UIPointerStyle? {
+        guard let cursor = cursorPresentation else { return nil }
+        if let shape = cursor.nativeShape { return UIPointerStyle(shape: shape, constrainedAxes: []) }
+        // Explicitly empty cursors and precise bitmap fallback both hide the
+        // system cursor only in our desktop region. UIKit restores it on exit.
+        return .hidden()
     }
 }

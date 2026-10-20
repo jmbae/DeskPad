@@ -3,74 +3,141 @@ import XCTest
 
 @MainActor
 final class RemoteInputTests: XCTestCase {
-    func testLocalPointerMovesWithoutAFramebufferAndTracksViewport() throws {
+    func testRemoteSurfaceUsesNativePointerWithoutAdditionalMarker() {
         let view = RemoteDesktopUIView(frame: CGRect(x: 0, y: 0, width: 200, height: 200))
         view.desktopSize = CGSize(width: 400, height: 200)
         let hover = StubHover()
         hover.testLocation = CGPoint(x: 150, y: 125)
         hover.testState = .changed
-        view.layer.displayIfNeeded()
-        XCTAssertFalse(view.layer.needsDisplay())
         var sent: CGPoint?
         view.onPointer = { point, _ in sent = point }
         _ = view.perform(NSSelectorFromString("handleHover:"), with: hover)
-        let marker = try XCTUnwrap(view.layer.sublayers?.first { $0.name == "local-input-pointer" })
-        XCTAssertNil(view.desktopImage)
-        XCTAssertFalse(view.layer.needsDisplay(), "Pointer movement must not repaint the framebuffer")
-        XCTAssertFalse(marker.isHidden)
         XCTAssertEqual(sent, CGPoint(x: 300, y: 150))
-        XCTAssertEqual(marker.position, hover.testLocation)
-        view.actualSize()
-        XCTAssertEqual(marker.position, CGPoint(x: 200, y: 150))
-        view.resetViewport()
-        XCTAssertEqual(marker.position, hover.testLocation)
-        view.bounds.size = CGSize(width: 400, height: 400)
-        view.layoutSubviews()
-        XCTAssertEqual(marker.position, CGPoint(x: 300, y: 250))
-        hover.testState = .ended
-        _ = view.perform(NSSelectorFromString("handleHover:"), with: hover)
-        XCTAssertTrue(marker.isHidden)
+        XCTAssertTrue(view.interactions.contains { $0 is UIPointerInteraction })
+        XCTAssertFalse(view.layer.sublayers?.contains { $0.name == "local-input-pointer" } ?? false)
     }
 
-    func testLocalPointerPanAndLetterboxClampUseRemoteCoordinates() throws {
-        let view = RemoteDesktopUIView(frame: CGRect(x: 0, y: 0, width: 200, height: 200))
-        view.desktopSize = CGSize(width: 400, height: 200)
-        let hover = StubHover()
-        hover.testLocation = CGPoint(x: 50, y: 10)
-        hover.testState = .changed
-        _ = view.perform(NSSelectorFromString("handleHover:"), with: hover)
-        let marker = try XCTUnwrap(view.layer.sublayers?.first { $0.name == "local-input-pointer" })
-        XCTAssertEqual(marker.position, CGPoint(x: 50, y: 50))
-        let pan = StubPan()
-        pan.testTranslation = CGPoint(x: 20, y: 30)
-        _ = view.perform(NSSelectorFromString("handleViewportPan:"), with: pan)
-        XCTAssertEqual(marker.position, CGPoint(x: 70, y: 80))
-        view.didMoveToWindow()
-        XCTAssertTrue(marker.isHidden)
-    }
-
-    func testLocalPointerClickFeedbackAndSessionReset() throws {
+    func testNativeArrowDoesNotDrawDuplicateAndCursorUpdatesDoNotRepaintDesktop() throws {
         let view = RemoteDesktopUIView(frame: CGRect(x: 0, y: 0, width: 200, height: 200))
         view.desktopSize = CGSize(width: 200, height: 200)
+        view.layer.displayIfNeeded()
+        view.remoteCursor = cursor(width: 3, height: 3, hotspotX: 0, hotspotY: 0, mask: [1,0,0, 1,1,0, 1,1,1])
+        XCTAssertFalse(view.layer.needsDisplay())
+        let hover = StubHover()
+        hover.testLocation = CGPoint(x: 80, y: 90)
+        hover.testState = .changed
+        _ = view.perform(NSSelectorFromString("handleHover:"), with: hover)
+        let layer = try XCTUnwrap(view.layer.sublayers?.first { $0.name == "remote-cursor" })
+        XCTAssertTrue(layer.isHidden, "Native pointer must be the only pointer during hardware hover")
+        XCTAssertNotNil(RemoteCursorPresentation(try XCTUnwrap(view.remoteCursor)).nativeShape)
+        XCTAssertFalse(view.layer.needsDisplay())
+    }
+
+    func testBitmapFallbackAlignsHotspotAndHidesOnExitAndReset() throws {
+        let view = RemoteDesktopUIView(frame: CGRect(x: 0, y: 0, width: 200, height: 200))
+        view.desktopSize = CGSize(width: 400, height: 200)
+        let shape = cursor(width: 3, height: 3, hotspotX: 1, hotspotY: 2, mask: Array(repeating: 1, count: 9))
+        view.remoteCursor = shape
+        XCTAssertNil(RemoteCursorPresentation(shape).nativeShape)
+        let hover = StubHover()
+        hover.testLocation = CGPoint(x: 150, y: 125)
+        hover.testState = .changed
+        _ = view.perform(NSSelectorFromString("handleHover:"), with: hover)
+        let layer = try XCTUnwrap(view.layer.sublayers?.first { $0.name == "remote-cursor" })
+        XCTAssertFalse(layer.isHidden)
+        XCTAssertEqual(layer.position, CGPoint(x: 149, y: 123))
+        let interaction = try XCTUnwrap(view.interactions.first { $0 is UIPointerInteraction } as? UIPointerInteraction)
+        XCTAssertNotNil(view.pointerInteraction(interaction, styleFor: UIPointerRegion(rect: view.bounds)))
+        view.actualSize()
+        XCTAssertEqual(layer.position, CGPoint(x: 199, y: 148))
+        hover.testState = .ended
+        _ = view.perform(NSSelectorFromString("handleHover:"), with: hover)
+        XCTAssertTrue(layer.isHidden)
+        hover.testState = .changed
+        _ = view.perform(NSSelectorFromString("handleHover:"), with: hover)
+        view.remoteCursor = nil
+        XCTAssertTrue(layer.isHidden)
+        XCTAssertNil(view.pointerInteraction(interaction, styleFor: UIPointerRegion(rect: view.bounds)))
+    }
+
+    func testCenteredTextBeamUsesNativePointerAndTransparentCursorStaysHidden() {
+        var mask = Array(repeating: UInt8(0), count: 5 * 11)
+        for x in 0..<5 { mask[x] = 1; mask[50 + x] = 1 }
+        for y in 1..<10 { mask[y * 5 + 2] = 1 }
+        let beam = cursor(width: 5, height: 11, hotspotX: 2, hotspotY: 5, mask: mask)
+        XCTAssertNotNil(RemoteCursorPresentation(beam).nativeShape)
+        let offCenter = cursor(width: 5, height: 11, hotspotX: 0, hotspotY: 5, mask: mask)
+        XCTAssertNil(RemoteCursorPresentation(offCenter).nativeShape)
+        let transparent = cursor(width: 5, height: 11, hotspotX: 0, hotspotY: 0, mask: Array(repeating: 0, count: 55))
+        XCTAssertTrue(RemoteCursorPresentation(transparent).isHidden)
+        XCTAssertNil(RemoteCursorPresentation(transparent).nativeShape)
+    }
+
+    func testColoredCursorRetainsBitmapAndEmptyCursorHidesSystemPointer() throws {
+        let colored = RFBCursorShape(width: 1, height: 1, hotspotX: 0, hotspotY: 0,
+                                     rgba: Data([255, 0, 0, 255]))
+        let presentation = RemoteCursorPresentation(colored)
+        XCTAssertNil(presentation.nativeShape, "Color conveys remote state and must not become a monochrome silhouette")
+        XCTAssertNotNil(presentation.image)
+        let view = RemoteDesktopUIView(frame: CGRect(x: 0, y: 0, width: 100, height: 100))
+        view.remoteCursor = cursor(width: 0, height: 0, hotspotX: 0, hotspotY: 0, mask: [])
+        let interaction = try XCTUnwrap(view.interactions.first { $0 is UIPointerInteraction } as? UIPointerInteraction)
+        XCTAssertNotNil(view.pointerInteraction(interaction, styleFor: UIPointerRegion(rect: view.bounds)))
+        XCTAssertTrue(RemoteCursorPresentation(try XCTUnwrap(view.remoteCursor)).isHidden)
+    }
+
+    func testLargeRemoteCursorRetainsLogicalPointSizeAcrossViewportChanges() throws {
+        let shape = cursor(width: 128, height: 64, hotspotX: 8, hotspotY: 4, mask: Array(repeating: 1, count: 128 * 64))
+        XCTAssertEqual(RemoteCursorPresentation(shape).size, CGSize(width: 128, height: 64))
+        let view = RemoteDesktopUIView(frame: CGRect(x: 0, y: 0, width: 200, height: 200))
+        view.desktopSize = CGSize(width: 400, height: 200)
+        view.remoteCursor = shape
+        let hover = StubHover()
+        hover.testLocation = CGPoint(x: 100, y: 100)
+        hover.testState = .changed
+        _ = view.perform(NSSelectorFromString("handleHover:"), with: hover)
+        let layer = try XCTUnwrap(view.layer.sublayers?.first { $0.name == "remote-cursor" })
+        XCTAssertEqual(layer.bounds.size, CGSize(width: 128, height: 64))
+        XCTAssertEqual(layer.position, CGPoint(x: 92, y: 96))
+        view.actualSize()
+        XCTAssertEqual(layer.bounds.size, CGSize(width: 128, height: 64))
+        XCTAssertEqual(layer.position, CGPoint(x: 92, y: 96))
+        view.resetViewport()
+        view.bounds.size = CGSize(width: 400, height: 400)
+        view.layoutSubviews()
+        XCTAssertEqual(layer.bounds.size, CGSize(width: 128, height: 64))
+        XCTAssertEqual(layer.position, CGPoint(x: 192, y: 196))
+    }
+
+    func testNativeShapeKeepsLogicalSizeWithoutThirtyTwoPointCap() throws {
+        let shape = cursor(width: 64, height: 64, hotspotX: 0, hotspotY: 0, mask: Array(repeating: 1, count: 64 * 64))
+        let presentation = RemoteCursorPresentation(shape)
+        XCTAssertEqual(presentation.size, CGSize(width: 64, height: 64))
+        guard case .path(let path) = try XCTUnwrap(presentation.nativeShape) else {
+            return XCTFail("Top-left hotspot uses native path")
+        }
+        XCTAssertEqual(path.bounds.size, CGSize(width: 64, height: 64))
+    }
+
+    func testTouchShowsActualRemoteCursorWithoutDecorativeRing() throws {
+        let view = RemoteDesktopUIView(frame: CGRect(x: 0, y: 0, width: 200, height: 200))
+        view.desktopSize = CGSize(width: 200, height: 200)
+        view.remoteCursor = cursor(width: 2, height: 2, hotspotX: 0, hotspotY: 0, mask: [1,0,1,1])
         let pan = StubPan()
         pan.testLocation = CGPoint(x: 90, y: 100)
         pan.testState = .began
         _ = view.perform(NSSelectorFromString("handleDrag:"), with: pan)
-        let marker = try XCTUnwrap(view.layer.sublayers?.first { $0.name == "local-input-pointer" } as? CAShapeLayer)
-        XCTAssertFalse(marker.isHidden)
-        XCTAssertEqual(marker.strokeColor, UIColor.systemYellow.cgColor)
-        XCTAssertNotNil(marker.animation(forKey: "click"))
+        let layer = try XCTUnwrap(view.layer.sublayers?.first { $0.name == "remote-cursor" })
+        XCTAssertFalse(layer.isHidden)
+        XCTAssertNotNil(layer.contents)
+        XCTAssertNil(layer.animationKeys())
         view.releaseAllKeys()
-        XCTAssertTrue(marker.isHidden)
-        XCTAssertNil(marker.animation(forKey: "click"))
-        pan.testState = .began
-        _ = view.perform(NSSelectorFromString("handleDrag:"), with: pan)
-        view.desktopImage = nil
-        XCTAssertTrue(marker.isHidden)
-        pan.testState = .changed
-        _ = view.perform(NSSelectorFromString("handleDrag:"), with: pan)
-        view.desktopSize = CGSize(width: 400, height: 200)
-        XCTAssertTrue(marker.isHidden)
+        XCTAssertTrue(layer.isHidden)
+    }
+
+    private func cursor(width: Int, height: Int, hotspotX: Int, hotspotY: Int, mask: [UInt8]) -> RFBCursorShape {
+        RFBCursorShape(width: width, height: height, hotspotX: hotspotX, hotspotY: hotspotY,
+                       rgba: Data(mask.flatMap { [UInt8(255), 255, 255, $0 == 0 ? 0 : 255] }))
     }
 
     func testSparseDragPressesOriginalPointAndMovesBeforeRelease() {

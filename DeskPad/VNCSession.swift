@@ -896,9 +896,6 @@ private actor RFBClient {
                 let payload = try await readExactly(length)
                 let cursor = try RFBCursorShape.decode(payload, width: rectWidth, height: rectHeight,
                     hotspotX: x, hotspotY: y, encoding: encoding, pixelFormat: pixelFormat)
-                #if DEBUG
-                VNCControlDiagnostics.logger.notice("cursor shape encoding=\(encoding) width=\(rectWidth) height=\(rectHeight) hotspot_x=\(x) hotspot_y=\(y)")
-                #endif
                 await model?.setCursor(cursor, generation: generation)
             case -223:
                 let newWidth = rectWidth
