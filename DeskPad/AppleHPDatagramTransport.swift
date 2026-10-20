@@ -30,8 +30,7 @@ actor AppleHPDatagramTransport {
     private var receiverTask: Task<Void, Never>?
     private var reorderTask: Task<Void, Never>?
     private var videoReorder = HighPerformanceRTPReorderBuffer()
-    private var videoDelivery: [HighPerformanceRTPPacket] = []
-    private var deliveringVideo = false
+    private var videoWorker: AppleHPVideoDeliveryQueue<HighPerformanceRTPPacket>?
     private var nackCount = 0
 
     init(offer: AppleHPMediaOffer, videoPayloadType: UInt8 = 123, pipeline: HighPerformanceMediaPipeline, onPlaying: @escaping () async -> Void, onFailure: @escaping (AppleHPFailure) async -> Void) throws {
@@ -142,7 +141,8 @@ actor AppleHPDatagramTransport {
         receiverTask?.cancel(); receiverTask = nil
         heartbeatTask?.cancel(); heartbeatTask = nil
         reorderTask?.cancel(); reorderTask = nil
-        videoDelivery.removeAll()
+        if let videoWorker { Task { await videoWorker.close() } }
+        videoWorker = nil
         videoReorder = HighPerformanceRTPReorderBuffer()
         for socket in sockets { socket.close() }
         sockets.removeAll()
@@ -167,27 +167,28 @@ actor AppleHPDatagramTransport {
             }
             catch { failMedia(.playbackFailure); return }
         }
-        // Timer and socket processing may re-enter this actor while the main
-        // actor decodes. Only one drain delivers ordered video to the pipeline.
-        guard videoDelivery.count + output.packets.count <= 1024,
-              videoDelivery.reduce(0, { $0 + $1.payload.count }) + output.packets.reduce(0, { $0 + $1.payload.count }) <= 12 * 1024 * 1024 else {
-            failMedia(.playbackFailure); return
-        }
-        videoDelivery.append(contentsOf: output.packets)
-        guard !deliveringVideo else { return }
-        deliveringVideo = true
-        defer { deliveringVideo = false }
-        while active, !videoDelivery.isEmpty {
-            let packet = videoDelivery.removeFirst()
-            do { try await pipeline.consumeVideo(packet) }
-            catch let error as HighPerformancePlaybackError {
-                if case .backpressure = error { requestKeyframe() }
-                else { failMedia(.playbackFailure); return }
-            } catch { requestKeyframe() }
-            let playing = await pipeline.isPlaying
-            if active, !didStart, playing {
-                didStart = true; await onPlaying()
+        if videoWorker == nil {
+            videoWorker = AppleHPVideoDeliveryQueue { [weak self] packet in
+                await self?.deliverOneVideo(packet)
             }
+        }
+        guard let videoWorker, await videoWorker.enqueue(output.packets.map { ($0, $0.payload.count) }) else {
+            if active { failMedia(.playbackFailure) }
+            return
+        }
+    }
+
+    private func deliverOneVideo(_ packet: HighPerformanceRTPPacket) async {
+        guard active, !Task.isCancelled else { return }
+        do { try await pipeline.consumeVideo(packet) }
+        catch let error as HighPerformancePlaybackError {
+            if case .backpressure = error { requestKeyframe() }
+            else { failMedia(.playbackFailure); return }
+        } catch { requestKeyframe() }
+        // Fragment packets cannot produce a complete frame. Avoid an extra main
+        // actor hop for every packet in a multi-thousand-packet keyframe burst.
+        if packet.marker, active, !didStart, await pipeline.isPlaying {
+            didStart = true; await onPlaying()
         }
     }
 
@@ -230,15 +231,20 @@ actor AppleHPDatagramTransport {
                     if stream == 1 { failMedia(.unsupportedVideoLayout); return }
                     throw HighPerformanceMediaError.malformedPacket
                 }
-                if stream == 0 { try await pipeline.consumeAudioAccessUnit(packet) }
-                else { await deliverVideo(videoReorder.insert(packet, now: ProcessInfo.processInfo.systemUptime)) }
-                let playing = await pipeline.isPlaying
-                if active, !didStart, playing {
-                    didStart = true; await onPlaying()
+                if stream == 0 {
+                    try await pipeline.consumeAudioAccessUnit(packet)
+                    if active, !didStart, await pipeline.isPlaying {
+                        didStart = true; await onPlaying()
+                    }
+                } else {
+                    await deliverVideo(videoReorder.insert(packet, now: ProcessInfo.processInfo.systemUptime))
                 }
                 counts[stream] += 1
                 if counts[stream] == 1 || counts[stream] % 500 == 0 {
                     #if DEBUG
+                    if stream == 1, let stats = await videoWorker?.statistics {
+                        VNCControlDiagnostics.logger.notice("HP video delivery queued=\(stats.queuedPackets) bytes=\(stats.queuedBytes) peak=\(stats.peakPackets) peakBytes=\(stats.peakBytes)")
+                    }
                     VNCControlDiagnostics.logger.notice("HP authenticated media stream=\(stream) packets=\(self.counts[stream]) pt=\(packet.payloadType) bytes=\(packet.payload.count) inboxDrops=\(self.inbox.droppedPackets)")
                     #endif
                 }
