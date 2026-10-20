@@ -2,9 +2,13 @@ import Foundation
 import Security
 import zlib
 
-/// Wire offer for the experimental single-picture H.264 / AAC-ELD profile.
+/// Wire offer for the experimental single-picture H.264 or HEVC / AAC-ELD profiles.
 /// No connection, display change, or media playback occurs in this builder.
 struct AppleHPMediaOffer {
+    enum VideoProfile: Sendable, CaseIterable {
+        case h264SinglePicture, hevcSinglePicture
+        var payloadType: UInt8 { self == .h264SinglePicture ? 123 : 100 }
+    }
     struct StreamKeys {
         let viewerToServer: Data
         let serverToViewer: Data
@@ -16,11 +20,11 @@ struct AppleHPMediaOffer {
     let videoSSRC: UInt32
     let audioSSRC: UInt32
 
-    static func make() throws -> Self {
+    static func make(videoProfile: VideoProfile = .h264SinglePicture) throws -> Self {
         let video = try makeKeys(), audio = try makeKeys()
         let videoSSRC = try randomSSRC(), audioSSRC = try randomSSRC()
-        let videoOffer = try plist(video: true, ssrc: videoSSRC)
-        let audioOffer = try plist(video: false, ssrc: audioSSRC)
+        let videoOffer = try plist(video: true, ssrc: videoSSRC, profile: videoProfile)
+        let audioOffer = try plist(video: false, ssrc: audioSSRC, profile: videoProfile)
         let bodySize = 216 + audioOffer.count + videoOffer.count
         guard bodySize <= Int(UInt16.max) else { throw Failure.oversizedOffer }
         var header = Data(repeating: 0, count: 36)
@@ -42,7 +46,7 @@ struct AppleHPMediaOffer {
         return Self(message: message, videoKeys: video, audioKeys: audio, videoSSRC: videoSSRC, audioSSRC: audioSSRC)
     }
 
-    private static func plist(video: Bool, ssrc: UInt32) throws -> Data {
+    private static func plist(video: Bool, ssrc: UInt32, profile: VideoProfile) throws -> Data {
         var endpoint = Proto()
         endpoint.number(1, 0); endpoint.number(2, 1)
         endpoint.string(3, "DeskPad"); endpoint.string(4, "1.1")
@@ -51,29 +55,34 @@ struct AppleHPMediaOffer {
             "avcMediaStreamNegotiatorMode": video ? 7 : 8,
             "avcMediaStreamOptionRemoteEndpointInfo": endpoint.data,
             "avcMediaStreamOptionCallID": UUID().uuidString,
-            "avcMediaStreamNegotiatorMediaBlob": try compressed(mediaDescription(video: video, ssrc: ssrc))
+            "avcMediaStreamNegotiatorMediaBlob": try compressed(mediaDescription(video: video, ssrc: ssrc, profile: profile))
         ]
         let result = try PropertyListSerialization.data(fromPropertyList: dictionary, format: .binary, options: 0)
         guard result.count < 16_384 else { throw Failure.oversizedOffer }
         return result
     }
 
-    private static func mediaDescription(video: Bool, ssrc: UInt32) -> Data {
+    private static func mediaDescription(video: Bool, ssrc: UInt32, profile: VideoProfile) -> Data {
         var description = Proto()
         description.number(1, UInt64(ssrc)); description.number(2, 0)
         if video {
             var codec = Proto()
-            // Apple bank identifier 123 requests H.264 output despite the
-            // historical parameter naming. LTR feedback is not advertised.
-            codec.number(1, 123)
-            for variant in [1, 2, 1, 2] {
+            // These are observed output mappings, not names inferred from codec
+            // parameter strings: bank 123 yields AVC; bank 100 yields HEVC.
+            // Request one picture for either codec, never four dependent tiles.
+            codec.number(1, UInt64(profile.payloadType))
+            let variants = profile == .h264SinglePicture ? [1, 2, 1, 2] : [1, 2]
+            for variant in variants {
                 var resolution = Proto()
                 resolution.number(1, 1); resolution.number(2, UInt64(variant))
                 resolution.number(3, 50115); resolution.number(4, 0)
                 codec.bytes(2, resolution.data)
             }
-            codec.string(3, "FLS;MS:-1;LF:-1;CABAC;POS:0;EOD:1;HTS:2;RR:3;AR:16/9,5/8;XR:16/9,5/8;")
-            codec.number(4, 1)
+            let parameters = profile == .h264SinglePicture
+                ? "FLS;MS:-1;LF:-1;CABAC;POS:0;EOD:1;HTS:2;RR:3;AR:16/9,5/8;XR:16/9,5/8;"
+                : "FLS;LF:-1;POS:5;EOD:1;HTS:2;RR:3;POSE:4;AR:16/9,5/8;XR:16/9,5/8;"
+            codec.string(3, parameters)
+            codec.number(4, profile == .h264SinglePicture ? 1 : 14)
             description.bytes(3, codec.data)
             description.number(6, 1); description.number(7, 0)
             description.number(8, 63); description.number(9, 1); description.number(12, 1)
