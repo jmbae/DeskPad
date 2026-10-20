@@ -74,18 +74,24 @@ actor AppleHPDatagramTransport {
             return
         }
         do {
+            // Keep the separate video return path open even though all
+            // RTCP feedback is muxed on the control/audio port.
+            sockets[1].send(Data([0]))
             let timestamp = UInt32(truncatingIfNeeded: UInt64(ProcessInfo.processInfo.systemUptime * 48_000))
             let packet = try heartbeat.protect(payload: Data([0, 0x68, 0x34, 0]), payloadType: 101, timestamp: timestamp)
             sockets[0].send(packet)
             var rr = Data([0x80, 201, 0, 1])
             rr.append(contentsOf: [UInt8(truncatingIfNeeded: videoSSRC >> 24), UInt8(truncatingIfNeeded: videoSSRC >> 16), UInt8(truncatingIfNeeded: videoSSRC >> 8), UInt8(truncatingIfNeeded: videoSSRC)])
-            sockets[1].send(try videoFeedback.protect(rr))
+            sockets[0].send(try videoFeedback.protect(rr))
         } catch { failMedia() }
     }
     func accept(_ answer: AppleHPMediaAnswer) throws {
         guard !negotiated, answer.secondVideo == nil, answer.video.codecPayloadType == 123 else {
             throw HighPerformanceMediaError.malformedPacket
         }
+        #if DEBUG
+        VNCControlDiagnostics.logger.notice("HP answer status=\(answer.status) videoPT=\(answer.video.codecPayloadType ?? 0) width=\(answer.video.width ?? 0) height=\(answer.video.height ?? 0)")
+        #endif
         remoteVideoSSRC = answer.video.ssrc
         remoteAudioSSRC = answer.audio.ssrc
         negotiated = true
@@ -98,7 +104,7 @@ actor AppleHPDatagramTransport {
         guard active, sockets.count == 2, let remoteVideoSSRC, now - lastPictureLossRequest >= 0.5 else { return }
         do {
             let packet = AppleHPFeedback.pictureLoss(sender: videoSSRC, media: remoteVideoSSRC)
-            sockets[1].send(try videoFeedback.protect(packet))
+            sockets[0].send(try videoFeedback.protect(packet))
             lastPictureLossRequest = now
         } catch { failMedia() }
     }
@@ -118,8 +124,13 @@ actor AppleHPDatagramTransport {
         sockets.removeAll()
     }
     private func decodeControl(_ data: Data, stream: Int) throws -> Data {
-        if stream == 0 { return try audioControl.receive(data) }
-        return try videoControl.receive(data)
+        guard data.count >= 8 else { throw HighPerformanceSRTPError.malformedPacket }
+        let ssrc = data.dropFirst(4).prefix(4).reduce(UInt32(0)) { ($0 << 8) | UInt32($1) }
+        // Video control uses the audio/control UDP port. This header only
+        // selects a verifier; no report is used before its tag is checked.
+        if ssrc == remoteVideoSSRC { return try videoControl.receive(data) }
+        if ssrc == remoteAudioSSRC { return try audioControl.receive(data) }
+        throw HighPerformanceSRTPError.malformedPacket
     }
     private func decodeMedia(_ data: Data, stream: Int) throws -> HighPerformanceRTPPacket {
         if stream == 0 { return try audio.receive(data) }
@@ -133,7 +144,12 @@ actor AppleHPDatagramTransport {
                 let plain = try decodeControl(data, stream: stream)
                 lastAuthenticatedPacket = ProcessInfo.processInfo.systemUptime
                 let reports = try HighPerformanceSenderReport.parseCompound(plain)
-                try await pipeline.observe(reports, clockRate: stream == 0 ? 48000 : 90000)
+                for report in reports {
+                    guard report.ssrc == remoteAudioSSRC || report.ssrc == remoteVideoSSRC else {
+                        throw HighPerformanceSRTPError.malformedPacket
+                    }
+                    try await pipeline.observe([report], clockRate: report.ssrc == remoteAudioSSRC ? 48000 : 90000)
+                }
                 #if DEBUG
                 if !reports.isEmpty { VNCControlDiagnostics.logger.notice("HP sender reports stream=\(stream) count=\(reports.count)") }
                 #endif

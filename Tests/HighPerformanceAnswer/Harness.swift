@@ -3,7 +3,7 @@ import Foundation
     static func rejected(_ body: () throws -> Void) { do { try body(); fatalError("accepted malformed input") } catch {} }
     static func main() throws {
         let offer = try AppleHPMediaOffer.make()
-        precondition(Array(offer.message[6..<10]) == [5, 0, 0, 0], "offer flags must be host little endian")
+        precondition(Array(offer.message[6..<10]) == [0, 0, 0, 5], "offer flags use big endian across the agent IPC boundary")
         let fixture = try Data(contentsOf: URL(fileURLWithPath: CommandLine.arguments[1]))
         var parser = AppleHPControlParser()
         var events: [AppleHPControlParser.Event] = []

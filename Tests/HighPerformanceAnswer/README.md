@@ -32,3 +32,7 @@ reference proxy comments describe a u16-length sibling of 1010. This conflicting
 evidence is insufficient to safely guess framing. Do not advertise 1011 until
 its relevant wire variant and decoder are validated. No live connection was
 used for these checks.
+
+## Live integration correction
+
+The runtime reference negotiation.py (build_0x1c) contradicts the older RFC notes: the agent IPC/NDR boundary swaps the flags, so the wire builder uses big-endian 00000005. The original LE fixture was a mistaken inference from the daemon load alone. The integration now preserves BE and tests those bytes. Both byte orders negotiated an answer during live trials, but neither alone produced 6K H.264 video; successful answer parsing is not proof of requested frame rate. Native encoder comparison separately reproduced H.264 failure at 6016-pixel width.

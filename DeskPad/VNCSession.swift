@@ -215,6 +215,9 @@ final class VNCSessionModel {
 
     private func fail(_ error: Error, generation: UUID) {
         guard self.generation == generation else { return }
+        #if DEBUG
+        VNCControlDiagnostics.logger.error("session failure: \(String(describing: error), privacy: .public)")
+        #endif
         let remoteTermination = error is RFBConnectionClosed && (state == .connected || state == .initializing)
         disconnect()
         state = remoteTermination ? .ended : .failed(error.localizedDescription)
