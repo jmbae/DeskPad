@@ -464,7 +464,7 @@ private actor RFBClient {
     }
 
     private func expireFirstFrame() {
-        guard !hasFrame, !Task.isCancelled else { return }
+        guard !hasFrame else { return }
         #if DEBUG
         VNCControlDiagnostics.logger.notice("first frame deadline expired")
         #endif
@@ -806,16 +806,7 @@ private actor RFBClient {
                 let rawReadStarted = Date()
                 VNCControlDiagnostics.logger.notice("raw read begin bytes=\(dataLength.partialValue) width=\(rectWidth) height=\(rectHeight)")
                 #endif
-                let receiveSeconds = RFBReceiveBudget.rawSeconds(byteCount: dataLength.partialValue)
-                if !hasFrame, dataLength.partialValue > 0 {
-                    // Only a validated, nonempty Raw payload earns transfer time.
-                    // The next operation must finish this payload before another
-                    // header can be read, so repeated messages cannot renew it.
-                    firstFrameTimeout?.cancel()
-                    firstFrameTimeout = nil
-                    armFirstFrameTimeout(seconds: receiveSeconds)
-                }
-                let raw = try await readExactly(dataLength.partialValue, receiveTimeout: .seconds(receiveSeconds))
+                let raw = try await readExactly(dataLength.partialValue)
                 #if DEBUG
                 let elapsedMilliseconds = Int(Date().timeIntervalSince(rawReadStarted) * 1_000)
                 VNCControlDiagnostics.logger.notice("raw read complete bytes=\(raw.count) elapsed_ms=\(elapsedMilliseconds)")
