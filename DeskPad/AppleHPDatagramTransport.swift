@@ -187,8 +187,11 @@ actor AppleHPDatagramTransport {
         } catch { requestKeyframe() }
         // Fragment packets cannot produce a complete frame. Avoid an extra main
         // actor hop for every packet in a multi-thousand-packet keyframe burst.
-        if packet.marker, active, !didStart, await pipeline.isPlaying {
-            didStart = true; await onPlaying()
+        if packet.marker, active, !didStart {
+            let playing = await pipeline.isPlaying
+            if active, !didStart, playing {
+                didStart = true; await onPlaying()
+            }
         }
     }
 
@@ -233,7 +236,8 @@ actor AppleHPDatagramTransport {
                 }
                 if stream == 0 {
                     try await pipeline.consumeAudioAccessUnit(packet)
-                    if active, !didStart, await pipeline.isPlaying {
+                    let playing = await pipeline.isPlaying
+                    if active, !didStart, playing {
                         didStart = true; await onPlaying()
                     }
                 } else {

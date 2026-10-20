@@ -84,3 +84,20 @@ as repaired. Stable main/TestFlight remain unchanged until live acceptance passe
   implemented, but live click acceptance is not established while the remote
   user is concurrently operating the machine.
 - Draft PR remains the review artifact. No local main merge or TestFlight upload.
+
+## Live user playback feedback (23:24–23:27 KST)
+
+The remote host fetched the flash/beep fixture at 23:23:56. The user confirmed
+hearing the beep both remotely and in the simulator, approximately aligned with
+the flash, but with intermittent omissions. This is perceptual confirmation, not
+a quantitative synchronization measurement or a sustained-playback pass.
+
+The earlier zero-PCM inference is invalid: the diagnostic converter exhausted its
+input with an EOF response and stopped decoding subsequent packets. Its cumulative
+decoded-frame count stayed at 480. A silence-then-tone regression reproduced this
+meter defect; a fix is being validated independently from actual playback.
+
+The user subsequently reported missing video. The observed simulator desktop was
+still visible with the test player at its black final frame (0:20/0:20); whether
+the report refers to missing flashes or a frozen whole desktop needs clarification.
+Frequent keyframe recovery remains a separate observed release blocker.
