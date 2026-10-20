@@ -46,6 +46,7 @@ extension HighPerformancePlayback: HighPerformanceMediaOutput {}
     #if DEBUG
     private var diagnosticVideoPackets = 0
     private var diagnosticVideoAUs = 0
+    private var diagnosticVideoGaps = 0
     private var diagnosticReports = 0
     #endif
     var onNeedsKeyframe: (() -> Void)?
@@ -137,7 +138,8 @@ extension HighPerformancePlayback: HighPerformanceMediaOutput {}
         diagnosticVideoPackets += 1
         if diagnosticVideoPackets <= 12 || diagnosticVideoPackets % 2000 == 0 {
             let nalType = packet.payload.first.map { Int(($0 >> 1) & 63) } ?? -1
-            VNCControlDiagnostics.logger.notice("HP HEVC packet count=\(self.diagnosticVideoPackets) type=\(nalType) bytes=\(packet.payload.count) marker=\(packet.marker)")
+            let fuType = nalType == 49 && packet.payload.count >= 3 ? Int(packet.payload[packet.payload.startIndex + 2] & 63) : -1
+            VNCControlDiagnostics.logger.notice("HP HEVC packet count=\(self.diagnosticVideoPackets) type=\(nalType) fu_type=\(fuType) bytes=\(packet.payload.count) marker=\(packet.marker)")
         }
         #endif
         guard packet.payloadType == videoPayloadType, packet.ssrc != selectedAudio else { throw Failure.unsupportedStream }
@@ -146,7 +148,16 @@ extension HighPerformancePlayback: HighPerformanceMediaOutput {}
         if let selectedVideo, selectedVideo != packet.ssrc { throw Failure.unsupportedStream }
         if selectedVideo == nil { selectedVideo = packet.ssrc; videos[packet.ssrc] = VideoState() }
         var state = videos[packet.ssrc]!
-        if let expected = state.expectedSequence, expected != packet.sequenceNumber { loseVideoContinuity() }
+        if let expected = state.expectedSequence, expected != packet.sequenceNumber {
+            #if DEBUG
+            diagnosticVideoGaps += 1
+            if diagnosticVideoGaps <= 10 || diagnosticVideoGaps % 100 == 0 {
+                let distance = Int16(bitPattern: packet.sequenceNumber &- expected)
+                VNCControlDiagnostics.logger.notice("HP HEVC sequence gaps=\(self.diagnosticVideoGaps) relative_distance=\(distance)")
+            }
+            #endif
+            loseVideoContinuity()
+        }
         state.expectedSequence = packet.sequenceNumber &+ 1
         let units: [Data]?
         do { units = try state.hevcDepacketizer.append(sequence: packet.sequenceNumber, timestamp: packet.timestamp, marker: packet.marker, payload: packet.payload) }
