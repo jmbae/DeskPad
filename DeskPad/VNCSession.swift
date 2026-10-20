@@ -508,7 +508,7 @@ private actor RFBClient {
     }
 
     private func expireFirstFrame() {
-        guard !hasFrame, !Task.isCancelled else { return }
+        guard !hasFrame else { return }
         #if DEBUG
         VNCControlDiagnostics.logger.notice("first frame deadline expired")
         #endif
