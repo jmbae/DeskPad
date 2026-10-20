@@ -50,3 +50,12 @@ swiftc -parse-as-library DeskPad/RFBZRLEDecoder.swift DeskPad/RFBCursorShape.swi
 Cursor formats follow https://github.com/rfbproto/rfbproto/blob/master/rfbproto.rst
 (Cursor and X Cursor pseudo-encodings). Server support is optional; advertising
 these encodings alone does not establish that a particular Mac sends shapes.
+
+`--case=apple-cursor` covers Apple CursorImage (0x450) STORE/SELECT wire
+framing, unknown cache references, following message alignment, and unchanged
+framebuffer revision. The decoder uses an independent bounded zlib stream per
+STORE and caches at most 64 shapes / 16 MiB per connection. Pixel data is BGRA
+plus a separate alpha plane, independent of the negotiated framebuffer depth.
+This optional encoding is advertised without enabling Apple's separate encrypted
+high-performance protocol; live support on the regular RFB connection must be
+verified rather than inferred from the extension advertisement.

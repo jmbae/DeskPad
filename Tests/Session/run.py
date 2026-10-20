@@ -93,7 +93,21 @@ def serve(listener, mode, marker):
                 expected_format=bytes([16,16,0,1,0,31,0,63,0,31,11,5,0,0,0,0])
                 assert pixel_format==b'\0'*4+expected_format
             stage = 'activity'
-            if mode=='cursor':
+            if mode=='apple-cursor':
+                assert 1104 in encodings
+                compressor=zlib.compressobj()
+                payload=compressor.compress(bytes([10,20,30,0,128]))+compressor.flush(zlib.Z_SYNC_FLUSH)
+                c.sendall(b'\0\0\0\x02'+struct.pack('>HHHHi',0,0,1,1,1104)+struct.pack('>II',1000,len(payload))+payload+struct.pack('>HHHHi',0,0,1,1,0)+b'\0\0\xff\0')
+                exact(c,10)
+                deadline=time.monotonic()+5
+                while not marker.exists():
+                    assert time.monotonic()<deadline
+                    time.sleep(.01)
+                # Unknown SELECT is ignored; known SELECT retains original geometry.
+                c.sendall(b'\0\0\0\x02'+struct.pack('>HHHHi',0,0,0,0,1104)+struct.pack('>II',9999,0)+struct.pack('>HHHHi',0,0,0,0,1104)+struct.pack('>II',1000,0))
+                exact(c,10)
+                c.sendall(b'\x03\0\0\0'+struct.pack('>I',9)+b'cursor-ok')
+            elif mode=='cursor':
                 assert -239 in encodings and -240 in encodings
                 c.sendall(b'\0\0\0\x01'+struct.pack('>HHHHi',1,0,2,1,-239)+bytes([0,0,255,0,0,255,0,0,0xc0]))
                 exact(c,10)
@@ -209,7 +223,7 @@ def serve(listener, mode, marker):
         if stage != 'activity' or mode not in ('terminal-error','first-frame-timeout','resize-timeout'):
             errors.append(AssertionError(f'{mode}: unexpected disconnect before all protocol assertions completed: {error}'))
     except Exception as error: errors.append(error)
-for mode in ['cursor','rgb565','zrle','zrle-bounds','zrle-length','zrle-bomb','zrle-palette','zrle-timeout','remote-close','remote-reset','remote-payload-close','slow-raw','first-frame','reconnect','malformed','clipboard','apple','apple-failure','vnc33','deinit','terminal-error','resize-release','first-frame-timeout','resize-timeout']:
+for mode in ['apple-cursor','cursor','rgb565','zrle','zrle-bounds','zrle-length','zrle-bomb','zrle-palette','zrle-timeout','remote-close','remote-reset','remote-payload-close','slow-raw','first-frame','reconnect','malformed','clipboard','apple','apple-failure','vnc33','deinit','terminal-error','resize-release','first-frame-timeout','resize-timeout']:
     selected = next((arg.split('=', 1)[1] for arg in sys.argv if arg.startswith('--case=')), None)
     if selected and mode != selected: continue
     if '--resize-only' in sys.argv and mode!='resize-timeout': continue

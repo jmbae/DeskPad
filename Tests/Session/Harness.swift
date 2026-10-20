@@ -37,7 +37,15 @@ import Foundation
             return
         }
         connect()
-        if mode == "cursor" {
+        if mode == "apple-cursor" {
+            try await waitUntil("Apple cursor STORE and frame") { model.state == .connected }
+            precondition(model.remoteCursor?.rgba == Data([30,20,10,128]))
+            let shape = model.remoteCursor
+            let revision = model.framebufferRevision
+            try signalServer()
+            try await waitUntil("Apple SELECT and aligned next message") { model.receivedClipboard == "cursor-ok" }
+            precondition(model.remoteCursor == shape && model.framebufferRevision == revision)
+        } else if mode == "cursor" {
             try await waitUntil("cursor before first frame") { model.remoteCursor != nil }
             precondition(model.state == .initializing && model.framebuffer.isEmpty)
             precondition(model.remoteCursor?.hotspotX == 1)
