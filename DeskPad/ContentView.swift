@@ -125,7 +125,7 @@ private struct ConnectionRow: View {
             VStack(alignment: .leading, spacing: 4) {
                 Text(connection.displayName)
                     .font(.headline)
-                Text("\(connection.host):\(connection.port)")
+                Text(verbatim: "\(connection.host):\(connection.port)")
                     .font(.subheadline)
                     .foregroundStyle(.secondary)
                 if let date = connection.lastConnected {
@@ -275,9 +275,12 @@ private struct SessionView: View {
                             .padding(.horizontal)
                             .padding(.vertical, 8)
                     }
-                    if session.screenWidth > 0, let image = makeImage() {
-                        RemoteDesktopSurface(controller: keyboardController, image: image,
+                    if session.screenWidth > 0, session.screenHeight > 0,
+                       session.framebuffer.count == session.screenWidth * session.screenHeight * 4 {
+                        RemoteDesktopSurface(controller: keyboardController, framebuffer: session.framebuffer,
+                            framebufferRevision: session.framebufferRevision,
                             size: CGSize(width: session.screenWidth, height: session.screenHeight),
+                            remoteCursor: session.remoteCursor,
                             onKey: { session.sendKey(keysym: $0, pressed: $1) },
                             onPointer: { point, mask in session.sendPointer(x: Int(point.x), y: Int(point.y), buttonMask: mask) })
                             .background(.black)
@@ -402,24 +405,7 @@ private struct SessionView: View {
         }
     }
 
-    private func makeImage() -> CGImage? {
-        guard session.screenWidth > 0, session.screenHeight > 0,
-              session.framebuffer.count == session.screenWidth * session.screenHeight * 4,
-              let provider = CGDataProvider(data: session.framebuffer as CFData) else { return nil }
-        return CGImage(
-            width: session.screenWidth,
-            height: session.screenHeight,
-            bitsPerComponent: 8,
-            bitsPerPixel: 32,
-            bytesPerRow: session.screenWidth * 4,
-            space: CGColorSpaceCreateDeviceRGB(),
-            bitmapInfo: CGBitmapInfo(rawValue: CGImageAlphaInfo.noneSkipLast.rawValue),
-            provider: provider,
-            decode: nil,
-            shouldInterpolate: false,
-            intent: .defaultIntent
-        )
-    }
+
 }
 
 private extension VNCSessionModel {
@@ -450,10 +436,17 @@ private final class RemoteKeyboardController {
 
 private struct RemoteDesktopSurface: UIViewRepresentable {
     let controller: RemoteKeyboardController
-    let image: CGImage
+    let framebuffer: Data
+    let framebufferRevision: UInt64
     let size: CGSize
+    let remoteCursor: RFBCursorShape?
     let onKey: (UInt32, Bool) -> Void
     let onPointer: (CGPoint, UInt8) -> Void
+    final class Coordinator {
+        var framebufferRevision: UInt64?
+    }
+    func makeCoordinator() -> Coordinator { Coordinator() }
+
     func makeUIView(context: Context) -> RemoteDesktopUIView {
         let view = RemoteDesktopUIView()
         view.onFocusChanged = { [weak controller] in controller?.isFocused = $0 }
@@ -461,13 +454,27 @@ private struct RemoteDesktopSurface: UIViewRepresentable {
         return view
     }
     func updateUIView(_ view: RemoteDesktopUIView, context: Context) {
-        view.desktopImage = image
+        if context.coordinator.framebufferRevision != framebufferRevision {
+            view.desktopImage = makeImage()
+            context.coordinator.framebufferRevision = framebufferRevision
+        }
         view.desktopSize = size
+        view.remoteCursor = remoteCursor
         view.onKey = onKey
         view.onPointer = onPointer
         controller.inputView = view
     }
-    static func dismantleUIView(_ view: RemoteDesktopUIView, coordinator: ()) {
+    private func makeImage() -> CGImage? {
+        let width = Int(size.width), height = Int(size.height)
+        guard width > 0, height > 0, framebuffer.count == width * height * 4,
+              let provider = CGDataProvider(data: framebuffer as CFData) else { return nil }
+        return CGImage(width: width, height: height, bitsPerComponent: 8, bitsPerPixel: 32,
+                       bytesPerRow: width * 4, space: CGColorSpaceCreateDeviceRGB(),
+                       bitmapInfo: CGBitmapInfo(rawValue: CGImageAlphaInfo.noneSkipLast.rawValue),
+                       provider: provider, decode: nil, shouldInterpolate: false, intent: .defaultIntent)
+    }
+
+    static func dismantleUIView(_ view: RemoteDesktopUIView, coordinator: Coordinator) {
         view.releaseAllKeys()
         _ = view.resignFirstResponder()
     }

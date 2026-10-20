@@ -60,8 +60,8 @@ def serve(listener, mode, marker):
             if mode=='deinit':
                 assert c.recv(1)==b''
                 return
-            c.sendall(b'RFB 003.005\n' if mode=='vnc33' else b'RFB 003.008\n')
-            assert exact(c,12)==(b'RFB 003.003\n' if mode=='vnc33' else b'RFB 003.008\n')
+            c.sendall(b'RFB 003.889\n' if mode=='apple-cursor' else (b'RFB 003.005\n' if mode=='vnc33' else b'RFB 003.008\n'))
+            assert exact(c,12)==(b'RFB 003.889\n' if mode=='apple-cursor' else (b'RFB 003.003\n' if mode=='vnc33' else b'RFB 003.008\n'))
             if mode=='vnc33':
                 challenge=bytes(range(16))
                 c.sendall(struct.pack('>I',2)+challenge)
@@ -84,17 +84,36 @@ def serve(listener, mode, marker):
                 c.sendall(struct.pack('>I',1))
                 assert c.recv(1)==b'' # Apple sends no following reason length or body.
                 return
-            c.sendall(b'\0'*4); exact(c,1)
+            c.sendall(b'\0'*4); assert exact(c,1)==(b'\xc1' if mode=='apple-cursor' else b'\x01')
             dimensions=(1024,1024) if mode=='slow-raw' else (1,1)
             c.sendall(struct.pack('>HH',*dimensions)+b'\0'*16+struct.pack('>I',0))
+            if mode=='apple-cursor':
+                viewer=exact(c,66)
+                mask=bytearray(32); mask[0]=0xb0; mask[2]=0xc; mask[3]=3; mask[4]=0x90; mask[10]=0x40
+                assert viewer==struct.pack('>BBHHIIIIIII',0x21,0,62,1,2,6,1,0,15,3,0)+bytes(mask)
             pixel_format=exact(c,20); count=struct.unpack('>H',exact(c,4)[2:])[0]; encodings=struct.unpack('>'+'i'*count,exact(c,count*4)); exact(c,10)
             if mode.startswith('zrle'): assert encodings[0]==16 and 0 in encodings
             if mode=='rgb565':
                 expected_format=bytes([16,16,0,1,0,31,0,63,0,31,11,5,0,0,0,0])
                 assert pixel_format==b'\0'*4+expected_format
             stage = 'activity'
-            if mode=='cursor':
-                assert -239 in encodings and -240 in encodings
+            if mode=='apple-cursor':
+                assert 1104 in encodings and -239 not in encodings and -240 not in encodings
+                c.sendall(bytes([0x14,0,0,4,0,1,0,12]))
+                compressor=zlib.compressobj()
+                payload=compressor.compress(bytes([10,20,30,0,128]))+compressor.flush(zlib.Z_SYNC_FLUSH)
+                c.sendall(b'\0\0\0\x02'+struct.pack('>HHHHi',0,0,1,1,1104)+struct.pack('>II',1000,len(payload))+payload+struct.pack('>HHHHi',0,0,1,1,0)+b'\0\0\xff\0')
+                exact(c,10)
+                deadline=time.monotonic()+5
+                while not marker.exists():
+                    assert time.monotonic()<deadline
+                    time.sleep(.01)
+                # Unknown SELECT is ignored; known SELECT retains original geometry.
+                c.sendall(b'\0\0\0\x02'+struct.pack('>HHHHi',0,0,0,0,1104)+struct.pack('>II',9999,0)+struct.pack('>HHHHi',0,0,0,0,1104)+struct.pack('>II',1000,0))
+                exact(c,10)
+                c.sendall(b'\x03\0\0\0'+struct.pack('>I',9)+b'cursor-ok')
+            elif mode=='cursor':
+                assert -239 in encodings and -240 in encodings and 1104 not in encodings
                 c.sendall(b'\0\0\0\x01'+struct.pack('>HHHHi',1,0,2,1,-239)+bytes([0,0,255,0,0,255,0,0,0xc0]))
                 exact(c,10)
                 deadline=time.monotonic()+5
@@ -103,9 +122,8 @@ def serve(listener, mode, marker):
                     time.sleep(.01)
                 c.sendall(b'\0\0\0\x02'+struct.pack('>HHHHi',0,0,0,0,-239)+struct.pack('>HHHHi',0,0,1,1,0)+b'\0\0\xff\0')
                 exact(c,10)
-                marker.unlink()
                 deadline=time.monotonic()+5
-                while not marker.exists():
+                while not marker.with_suffix('.frame').exists():
                     assert time.monotonic()<deadline
                     time.sleep(.01)
                 c.sendall(b'\0\0\0\x01'+struct.pack('>HHHHi',0,0,1,1,-240)+bytes([255,0,0,0,255,0,128,128]))
@@ -210,7 +228,7 @@ def serve(listener, mode, marker):
         if stage != 'activity' or mode not in ('terminal-error','first-frame-timeout','resize-timeout'):
             errors.append(AssertionError(f'{mode}: unexpected disconnect before all protocol assertions completed: {error}'))
     except Exception as error: errors.append(error)
-for mode in ['cursor','rgb565','zrle','zrle-bounds','zrle-length','zrle-bomb','zrle-palette','zrle-timeout','remote-close','remote-reset','remote-payload-close','slow-raw','first-frame','reconnect','malformed','clipboard','apple','apple-failure','vnc33','deinit','terminal-error','resize-release','first-frame-timeout','resize-timeout']:
+for mode in ['apple-cursor','cursor','rgb565','zrle','zrle-bounds','zrle-length','zrle-bomb','zrle-palette','zrle-timeout','remote-close','remote-reset','remote-payload-close','slow-raw','first-frame','reconnect','malformed','clipboard','apple','apple-failure','vnc33','deinit','terminal-error','resize-release','first-frame-timeout','resize-timeout']:
     selected = next((arg.split('=', 1)[1] for arg in sys.argv if arg.startswith('--case=')), None)
     if selected and mode != selected: continue
     if '--resize-only' in sys.argv and mode!='resize-timeout': continue

@@ -28,6 +28,28 @@ import Foundation
         rejects { _ = try RFBCursorShape.payloadLength(width: 1, height: 1, hotspotX: 1, hotspotY: 0, encoding: -239, pixelFormat: .rgb888) }
         rejects { _ = try RFBCursorShape.decode(Data([0]), width: 1, height: 1, hotspotX: 0, hotspotY: 0, encoding: -239, pixelFormat: .rgb888) }
         rejects { _ = try RFBCursorShape.decode(Data(), width: 0, height: 0, hotspotX: 0, hotspotY: 0, encoding: 0, pixelFormat: .rgb888) }
+        let cache = RFBAppleCursorCache()
+        let compressed = Data([120, 156, 226, 18, 145, 99, 104, 0, 0, 0, 0, 255, 255])
+        let stored = try cache.decode(cacheID: 1000, compressed: compressed, width: 1, height: 1, hotspotX: 0, hotspotY: 0)
+        precondition(stored?.rgba == Data([30,20,10,128]))
+        let selected = try cache.decode(cacheID: 1000, compressed: Data(), width: 0, height: 0, hotspotX: 0, hotspotY: 0)
+        precondition(selected == stored)
+        let unknown = try cache.decode(cacheID: 2000, compressed: Data(), width: 0, height: 0, hotspotX: 0, hotspotY: 0)
+        precondition(unknown == nil)
+        let newSession = try RFBAppleCursorCache().decode(cacheID: 1000, compressed: Data(), width: 0, height: 0, hotspotX: 0, hotspotY: 0)
+        precondition(newSession == nil)
+        rejects { _ = try cache.decode(cacheID: 1, compressed: Data([0,0]), width: 1, height: 1, hotspotX: 0, hotspotY: 0) }
+        rejects { _ = try cache.decode(cacheID: 1, compressed: compressed, width: 2, height: 1, hotspotX: 0, hotspotY: 0) }
+        rejects { _ = try cache.decode(cacheID: 1, compressed: compressed, width: 1, height: 1, hotspotX: 1, hotspotY: 0) }
+        let lru = RFBAppleCursorCache()
+        for id: UInt32 in 0..<64 {
+            _ = try lru.decode(cacheID: id, compressed: compressed, width: 1, height: 1, hotspotX: 0, hotspotY: 0)
+        }
+        _ = try lru.decode(cacheID: 0, compressed: Data(), width: 0, height: 0, hotspotX: 0, hotspotY: 0)
+        _ = try lru.decode(cacheID: 64, compressed: compressed, width: 1, height: 1, hotspotX: 0, hotspotY: 0)
+        let recent = try lru.decode(cacheID: 0, compressed: Data(), width: 0, height: 0, hotspotX: 0, hotspotY: 0)
+        let evicted = try lru.decode(cacheID: 1, compressed: Data(), width: 0, height: 0, hotspotX: 0, hotspotY: 0)
+        precondition(recent != nil && evicted == nil)
         print("PASS cursor decoder: color formats, padded masks, XCursor, hotspots, hidden, invalid lengths/sizes")
     }
 }

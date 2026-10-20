@@ -50,3 +50,16 @@ swiftc -parse-as-library DeskPad/RFBZRLEDecoder.swift DeskPad/RFBCursorShape.swi
 Cursor formats follow https://github.com/rfbproto/rfbproto/blob/master/rfbproto.rst
 (Cursor and X Cursor pseudo-encodings). Server support is optional; advertising
 these encodings alone does not establish that a particular Mac sends shapes.
+
+`--case=apple-cursor` covers Apple CursorImage (0x450) STORE/SELECT wire
+framing, unknown cache references, following message alignment, and unchanged
+framebuffer revision. The decoder uses an independent bounded zlib stream per
+STORE and caches at most 64 shapes / 16 MiB per connection. Pixel data is BGRA
+plus a separate alpha plane, independent of the negotiated framebuffer depth.
+For servers advertising Apple's 3.889 banner, the client negotiates 3.889,
+sends ClientInit C1 and ViewerInfo, and advertises only cached Apple cursors.
+The test asserts those exact handshake bytes and consumes a bounded status
+heartbeat before cursor updates. Other VNC servers keep the standard handshake
+and Cursor/XCursor encodings. No encrypted record layer, virtual display, or
+automatic framebuffer streaming is enabled. Live Mac QA observed 1104 STORE and
+SELECT updates using this combination; see the main live-QA report for UI checks.

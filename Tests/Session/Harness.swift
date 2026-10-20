@@ -37,7 +37,15 @@ import Foundation
             return
         }
         connect()
-        if mode == "cursor" {
+        if mode == "apple-cursor" {
+            try await waitUntil("Apple cursor STORE and frame") { model.state == .connected }
+            precondition(model.remoteCursor?.rgba == Data([30,20,10,128]))
+            let shape = model.remoteCursor
+            let revision = model.framebufferRevision
+            try signalServer()
+            try await waitUntil("Apple SELECT and aligned next message") { model.receivedClipboard == "cursor-ok" }
+            precondition(model.remoteCursor == shape && model.framebufferRevision == revision)
+        } else if mode == "cursor" {
             try await waitUntil("cursor before first frame") { model.remoteCursor != nil }
             precondition(model.state == .initializing && model.framebuffer.isEmpty)
             precondition(model.remoteCursor?.hotspotX == 1)
@@ -46,9 +54,7 @@ import Foundation
             try await waitUntil("hidden cursor and frame") { model.state == .connected }
             precondition(model.remoteCursor?.isHidden == true)
             let revision = model.framebufferRevision
-            // The server removes the first marker before awaiting the next.
-            try await Task.sleep(for: .milliseconds(100))
-            try signalServer()
+            try Data().write(to: marker.appendingPathExtension("frame"))
             try await waitUntil("cursor-only update after frame") { model.remoteCursor?.width == 1 }
             precondition(model.framebufferRevision == revision)
             precondition(model.framebuffer == Data([255,0,0,255]))

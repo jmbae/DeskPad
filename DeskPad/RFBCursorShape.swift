@@ -58,3 +58,74 @@ nonisolated struct RFBCursorShape: Equatable, Sendable {
         return Self(width: width, height: height, hotspotX: hotspotX, hotspotY: hotspotY, rgba: Data(rgba))
     }
 }
+
+// Apple's CursorImage (0x450) uses session-local opaque cache identifiers.
+// Wire format documented from native captures by iShareScreen:
+// https://github.com/renegadelink/iShareScreen/blob/main/docs/apple_vnc_rfc.md#83-cursorimage-0x450
+import zlib
+
+nonisolated final class RFBAppleCursorCache {
+    private var shapes: [UInt32: RFBCursorShape] = [:]
+    private var order: [UInt32] = []
+    private var storedBytes = 0
+
+    static func maximumCompressedLength(width: Int, height: Int, hotspotX: Int, hotspotY: Int) throws -> Int {
+        _ = try RFBCursorShape.payloadLength(width: width, height: height, hotspotX: hotspotX,
+            hotspotY: hotspotY, encoding: -239, pixelFormat: .rgb888)
+        guard width > 0, height > 0 else { throw RFBCursorShape.DecodeError.invalidDimensions }
+        return width * height * 5 + 4096
+    }
+
+    func decode(cacheID: UInt32, compressed: Data, width: Int, height: Int,
+                hotspotX: Int, hotspotY: Int) throws -> RFBCursorShape? {
+        // SELECT has no pixels; its rectangle geometry is zero, not hidden.
+        if compressed.isEmpty {
+            guard let shape = shapes[cacheID] else { return nil }
+            order.removeAll { $0 == cacheID }
+            order.append(cacheID)
+            return shape
+        }
+        let maximum = try Self.maximumCompressedLength(width: width, height: height,
+            hotspotX: hotspotX, hotspotY: hotspotY)
+        guard compressed.count <= maximum else { throw RFBCursorShape.DecodeError.invalidLength }
+        let expected = width * height * 5
+        var raw = [UInt8](repeating: 0, count: expected + 1)
+        var stream = z_stream()
+        guard inflateInit_(&stream, ZLIB_VERSION, Int32(MemoryLayout<z_stream>.size)) == Z_OK else {
+            throw RFBCursorShape.DecodeError.invalidLength
+        }
+        defer { inflateEnd(&stream) }
+        let status = compressed.withUnsafeBytes { input in
+            raw.withUnsafeMutableBytes { output in
+                stream.next_in = UnsafeMutablePointer(mutating: input.bindMemory(to: UInt8.self).baseAddress!)
+                stream.avail_in = uInt(compressed.count)
+                stream.next_out = output.bindMemory(to: UInt8.self).baseAddress!
+                stream.avail_out = uInt(expected + 1)
+                return inflate(&stream, Z_SYNC_FLUSH)
+            }
+        }
+        guard (status == Z_OK || status == Z_STREAM_END), stream.avail_in == 0,
+              stream.total_out == expected else { throw RFBCursorShape.DecodeError.invalidLength }
+        var rgba = [UInt8](repeating: 0, count: width * height * 4)
+        for pixel in 0..<(width * height) {
+            let offset = pixel * 4
+            let alpha = raw[width * height * 4 + pixel]
+            if alpha > 0 {
+                rgba[offset] = raw[offset + 2]; rgba[offset + 1] = raw[offset + 1]
+                rgba[offset + 2] = raw[offset]; rgba[offset + 3] = alpha
+            }
+        }
+        let shape = RFBCursorShape(width: width, height: height, hotspotX: hotspotX,
+                                  hotspotY: hotspotY, rgba: Data(rgba))
+        if let old = shapes.removeValue(forKey: cacheID) { storedBytes -= old.rgba.count }
+        order.removeAll { $0 == cacheID }
+        while !order.isEmpty && (order.count >= 64 || storedBytes + shape.rgba.count > 16 * 1024 * 1024) {
+            let oldest = order.removeFirst()
+            if let old = shapes.removeValue(forKey: oldest) { storedBytes -= old.rgba.count }
+        }
+        shapes[cacheID] = shape
+        order.append(cacheID)
+        storedBytes += shape.rgba.count
+        return shape
+    }
+}
