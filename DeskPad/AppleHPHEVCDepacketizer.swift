@@ -35,6 +35,17 @@ struct AppleHPHEVCDepacketizer {
         guard !damaged else { return nil }
         do {
             let b = [UInt8](payload)
+            #if DEBUG
+            if b.count >= 2, (b[0] >> 1) & 63 == 48 {
+                diagnosticAPCount += 1
+                if diagnosticAPCount <= 3 {
+                    let temporalID = b[1] & 7
+                    let forbidden = b[0] & 128 != 0
+                    let layerID = Int(b[0] & 1) << 5 | Int(b[1] >> 3)
+                    VNCControlDiagnostics.logger.notice("HP HEVC AP header forbidden=\(forbidden) temporal_id_plus1=\(temporalID) layer=\(layerID)")
+                }
+            }
+            #endif
             guard (3...65535).contains(b.count), b[0] & 128 == 0, b[1] & 7 != 0 else { throw Failure.malformed }
             let type = (b[0] >> 1) & 63
             let donBytes = packetization == .appleDON ? 2 : 0
@@ -44,7 +55,6 @@ struct AppleHPHEVCDepacketizer {
                 try add(Data(b.prefix(2)) + Data(b.dropFirst(2 + donBytes)))
             case 48:
                 #if DEBUG
-                diagnosticAPCount += 1
                 if diagnosticAPCount <= 3 {
                     // Structural metadata only: positions, declared sizes, NAL types.
                     // Compare negotiated Apple DON placement with no-DON framing.
