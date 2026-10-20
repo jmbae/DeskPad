@@ -103,9 +103,8 @@ def serve(listener, mode, marker):
                     time.sleep(.01)
                 c.sendall(b'\0\0\0\x02'+struct.pack('>HHHHi',0,0,0,0,-239)+struct.pack('>HHHHi',0,0,1,1,0)+b'\0\0\xff\0')
                 exact(c,10)
-                marker.unlink()
                 deadline=time.monotonic()+5
-                while not marker.exists():
+                while not marker.with_suffix('.frame').exists():
                     assert time.monotonic()<deadline
                     time.sleep(.01)
                 c.sendall(b'\0\0\0\x01'+struct.pack('>HHHHi',0,0,1,1,-240)+bytes([255,0,0,0,255,0,128,128]))
