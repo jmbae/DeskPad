@@ -315,6 +315,7 @@ private actor RFBClient {
     private weak var model: VNCSessionModel?
     private let generation: UUID
     private let timeoutState = RFBTimeoutState()
+    private let appleCursorCache = RFBAppleCursorCache()
     private let pixelFormat: RFBPixelFormat
     private let zrleDecoder: RFBZRLEDecoder
     private var hasFrame = false
@@ -750,11 +751,12 @@ private actor RFBClient {
 
     private func sendEncodings() async throws {
         var message = Data([2, 0])
-        message.appendUInt16(6)
+        message.appendUInt16(7)
         message.appendInt32(16)
         message.appendInt32(0)
         message.appendInt32(1)
         message.appendInt32(-223)
+        message.appendInt32(0x450)
         message.appendInt32(-239)
         message.appendInt32(-240)
         try await send(message)
@@ -899,6 +901,22 @@ private actor RFBClient {
                 }
                 pixelsChanged = pixelsChanged || (rectWidth > 0 && rectHeight > 0)
                 copyRectangle(sourceX: sourceX, sourceY: sourceY, x: x, y: y, width: rectWidth, height: rectHeight)
+            case 0x450:
+                let cacheID = try await readUInt32()
+                let compressedLength = Int(try await readUInt32())
+                if compressedLength > 0 {
+                    let maximum = try RFBAppleCursorCache.maximumCompressedLength(width: rectWidth,
+                        height: rectHeight, hotspotX: x, hotspotY: y)
+                    guard compressedLength <= maximum else { throw RFBCursorShape.DecodeError.invalidLength }
+                }
+                let compressed = try await readExactly(compressedLength)
+                if let cursor = try appleCursorCache.decode(cacheID: cacheID, compressed: compressed,
+                    width: rectWidth, height: rectHeight, hotspotX: x, hotspotY: y) {
+                    await model?.setCursor(cursor, generation: generation)
+                }
+                #if DEBUG
+                VNCControlDiagnostics.logger.notice("cursor shape encoding=1104 width=\(rectWidth) height=\(rectHeight) compressed_bytes=\(compressedLength)")
+                #endif
             case -239, -240:
                 let length = try RFBCursorShape.payloadLength(width: rectWidth, height: rectHeight,
                     hotspotX: x, hotspotY: y, encoding: encoding, pixelFormat: pixelFormat)

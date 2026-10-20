@@ -28,6 +28,17 @@ import Foundation
         rejects { _ = try RFBCursorShape.payloadLength(width: 1, height: 1, hotspotX: 1, hotspotY: 0, encoding: -239, pixelFormat: .rgb888) }
         rejects { _ = try RFBCursorShape.decode(Data([0]), width: 1, height: 1, hotspotX: 0, hotspotY: 0, encoding: -239, pixelFormat: .rgb888) }
         rejects { _ = try RFBCursorShape.decode(Data(), width: 0, height: 0, hotspotX: 0, hotspotY: 0, encoding: 0, pixelFormat: .rgb888) }
+        let cache = RFBAppleCursorCache()
+        let compressed = Data([120, 156, 226, 18, 145, 99, 104, 0, 0, 0, 0, 255, 255])
+        let stored = try cache.decode(cacheID: 1000, compressed: compressed, width: 1, height: 1, hotspotX: 0, hotspotY: 0)
+        precondition(stored?.rgba == Data([30,20,10,128]))
+        let selected = try cache.decode(cacheID: 1000, compressed: Data(), width: 0, height: 0, hotspotX: 0, hotspotY: 0)
+        precondition(selected == stored)
+        let unknown = try cache.decode(cacheID: 2000, compressed: Data(), width: 0, height: 0, hotspotX: 0, hotspotY: 0)
+        precondition(unknown == nil)
+        let newSession = try RFBAppleCursorCache().decode(cacheID: 1000, compressed: Data(), width: 0, height: 0, hotspotX: 0, hotspotY: 0)
+        precondition(newSession == nil)
+        rejects { _ = try cache.decode(cacheID: 1, compressed: Data([0,0]), width: 1, height: 1, hotspotX: 0, hotspotY: 0) }
         print("PASS cursor decoder: color formats, padded masks, XCursor, hotspots, hidden, invalid lengths/sizes")
     }
 }
