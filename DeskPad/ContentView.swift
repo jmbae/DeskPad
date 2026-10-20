@@ -401,6 +401,15 @@ private struct SessionView: View {
             .alert(item: $warning) { item in
                 Alert(title: Text("DeskPad"), message: Text(item.text), dismissButton: .default(Text("확인")))
             }
+            .alert("Mac 서버 신뢰 확인", isPresented: Binding(
+                get: { session.hpTrustChallenge != nil },
+                set: { if !$0 { session.answerHPTrust(false) } }
+            ), presenting: session.hpTrustChallenge) { _ in
+                Button("취소", role: .cancel) { session.answerHPTrust(false) }
+                Button("이 Mac 신뢰") { session.answerHPTrust(true) }
+            } message: { challenge in
+                Text("처음 연결하는 고성능 서버입니다. 연결 대상이 맞는지 확인하세요.\n\(challenge.host):\(String(challenge.port))\nSHA-256: \(challenge.fingerprint)")
+            }
             .onChange(of: scenePhase) { _, phase in
                 if phase != .active { keyboardController.dismiss(); keyboardController.inputView?.releaseAllKeys() }
             }

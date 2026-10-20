@@ -64,11 +64,54 @@ final class VNCSessionModel {
             #endif
         }
     }
+    private let hpServerTrust = AppleHPServerTrust()
+    private(set) var hpTrustChallenge: AppleHPServerTrust.Challenge?
+    private var hpTrustReply: CheckedContinuation<Bool, Never>?
+
+    func answerHPTrust(_ approved: Bool) {
+        let reply = hpTrustReply
+        hpTrustReply = nil
+        hpTrustChallenge = nil
+        reply?.resume(returning: approved)
+    }
+
+    func verifyHPServerKey(_ der: Data, host: String, port: UInt16, generation: UUID) async throws {
+        guard self.generation == generation else { throw CancellationError() }
+        let decision = try await hpServerTrust.inspect(der: der, host: host, port: Int(port))
+        guard self.generation == generation, !Task.isCancelled else { throw CancellationError() }
+        switch decision {
+        case .trusted: return
+        case .approvalRequired(let challenge):
+            let approved = await withTaskCancellationHandler {
+                await withCheckedContinuation { reply in
+                    hpTrustReply = reply
+                    hpTrustChallenge = challenge
+                }
+            } onCancel: {
+                Task { @MainActor [weak self] in
+                    guard self?.hpTrustChallenge?.id == challenge.id else { return }
+                    self?.answerHPTrust(false)
+                }
+            }
+            guard self.generation == generation, !Task.isCancelled else {
+                await hpServerTrust.cancel(challenge)
+                throw CancellationError()
+            }
+            guard approved else {
+                await hpServerTrust.cancel(challenge)
+                throw NSError(domain: "DeskPad.ServerTrust", code: 1,
+                    userInfo: [NSLocalizedDescriptionKey: "Mac 서버 신뢰 확인이 취소되었습니다."])
+            }
+            try await hpServerTrust.approve(challenge)
+        }
+    }
+
     private(set) var highPerformancePlayback: HighPerformancePlayback?
     func attachHighPerformance(_ playback: HighPerformancePlayback, width: Int, height: Int, generation: UUID) {
         guard self.generation == generation else { return }
         highPerformancePlayback = playback
-        screenWidth = width; screenHeight = height; state = .initializing
+        screenWidth = width; screenHeight = height
+        if state != .connected { state = .initializing }
     }
     private(set) var framebuffer = Data()
     private(set) var remoteCursor: RFBCursorShape?
@@ -150,6 +193,7 @@ final class VNCSessionModel {
     }
 
     func disconnect() {
+        answerHPTrust(false)
         highPerformancePlayback?.reset(); highPerformancePlayback = nil
         generation = UUID()
         sessionTask?.cancel()
@@ -369,6 +413,8 @@ private actor RFBClient {
     private let zrleDecoder: RFBZRLEDecoder
     private var hpCipher: AppleHPRecordCipher?
     private var hpDatagrams: AppleHPDatagramTransport?
+    private var hpPresentationTask: Task<Void, Never>?
+    private var usesHighPerformance = false
     private var hasFrame = false
     private var firstFrameTimeout: Task<Void, Never>?
     private let queue = DispatchQueue(label: "DeskPad.RFBTransport")
@@ -410,7 +456,7 @@ private actor RFBClient {
         let parameters = NWParameters(tls: nil, tcp: tcpOptions)
         var resolvedHost = host
         #if DEBUG
-        if ProcessInfo.processInfo.arguments.contains("--deskpad-hp-probe") {
+        if ProcessInfo.processInfo.arguments.contains("--deskpad-hp-mirror") {
             resolvedHost = try await AppleHPUDPSocket.resolveIPv4(host: host)
         }
         #endif
@@ -467,11 +513,11 @@ private actor RFBClient {
             }
             let securityTypes = try await readExactly(securityCount)
             #if DEBUG
-            if ProcessInfo.processInfo.arguments.contains("--deskpad-hp-probe") {
+            if ProcessInfo.processInfo.arguments.contains("--deskpad-hp-mirror") {
                 guard usesAppleExtensions, securityTypes.contains(33), let password else {
                     throw ClientError.invalidServerMessage("고성능 실험 인증을 지원하지 않습니다.")
                 }
-                armFirstFrameTimeout(seconds: 15)
+                usesHighPerformance = true
                 try await probeHighPerformance(password: password)
                 return
             }
@@ -565,29 +611,23 @@ private actor RFBClient {
     #if DEBUG
     // Isolated diagnostic launch flag: never enables an unfinished audio mode in releases.
     private func probeHighPerformance(password: String) async throws {
+        try AppleHPSessionLifecycle.validateDisplayPolicy(changesHostDisplay: false)
         let key = try await AppleHPAuthentication.authenticate(username: username, password: password,
             read: { count in try await self.readExactly(count) },
-            write: { data in try await self.send(data) }, verifyKey: { _ in })
+            write: { data in try await self.send(data) }, verifyKey: { der in
+                guard let model = self.model else { throw CancellationError() }
+                try await model.verifyHPServerKey(der, host: self.host, port: self.port, generation: self.generation)
+            })
         VNCControlDiagnostics.logger.notice("HP probe RSA1 authentication accepted")
-        try await send(Data([0xC1]))
+        armFirstFrameTimeout(seconds: 15)
+        let bootstrap = try AppleHPMirrorHandshake(encodings: [1010, 1103, -223])
+        try await send(bootstrap.clientInit)
         let header = try await readExactly(24)
         let nameLength = Int(header.readUInt32(at: 20))
         guard nameLength <= 4096 else { throw ClientError.invalidServerMessage("HP 서버 이름 길이 오류") }
         _ = try await readExactly(nameLength)
-        var viewer = Data([0x21, 0, 0, 62, 0, 1])
-        for value: UInt32 in [2, 6, 1, 0, 15, 3, 0] { viewer.appendUInt32(value) }
-        var mask = [UInt8](repeating: 0, count: 32)
-        mask[0] = 0xB0; mask[2] = 0x0C; mask[3] = 0x03; mask[4] = 0x90; mask[10] = 0x40
-        viewer.append(contentsOf: mask)
-        viewer.append(contentsOf: [0x12, 0, 0, 1, 0, 1, 0, 1, 0, 0, 0, 1])
-        try await send(viewer)
-        // Keep the physical desktop visible during the next renderer acceptance test.
-        // Virtual-display configuration remains isolated until first-frame validation.
-
-        let encodings: [Int32] = [1010, 1011, 1002, 6, 16, 1104, 1100, -223, 1101, 1105, 1107, 1109, 1110]
-        var request = Data([2, 0]); request.appendUInt16(UInt16(encodings.count))
-        for encoding in encodings { request.appendInt32(encoding) }
-        try await send(request)
+        for message in bootstrap.cleartextPrelude { try await send(message) }
+        let request = bootstrap.setEncodings
         for _ in 0..<16 {
             let message = try await readExactly(1)[0]
             if message == 0x14 {
@@ -601,10 +641,13 @@ private actor RFBClient {
             let update = try await readExactly(3)
             let count = Int(update.readUInt16(at: 1))
             guard count <= 64 else { throw ClientError.invalidServerMessage("HP 사각형 수 오류") }
-            for _ in 0..<count {
+            for index in 0..<count {
                 let rect = try await readExactly(12)
                 let encoding = rect.readInt32(at: 8)
                 if encoding == 1103 {
+                    guard index == count - 1 else {
+                        throw ClientError.invalidServerMessage("HP 암호화 전환 경계 오류")
+                    }
                     let payload = try await readExactly(36)
                     guard key.count == 16, payload.count == 36 else { throw ClientError.authenticationFailed }
                     let cipher = try AppleHPRecordCipher(wrapKey: key)
@@ -615,39 +658,61 @@ private actor RFBClient {
                     let playback = await HighPerformancePlayback()
                     let pipeline = try await HighPerformanceMediaPipeline(output: playback, videoPayloadType: 123)
                     width = Int(header.readUInt16(at: 0)); height = Int(header.readUInt16(at: 2))
+                    try validateDimensions(width: width, height: height)
                     await model?.attachHighPerformance(playback, width: width, height: height, generation: generation)
                     let media = try AppleHPDatagramTransport(offer: offer, pipeline: pipeline, onPlaying: { [weak self] in
-                        await self?.highPerformanceBeganPlaying()
+                        await self?.awaitHighPerformancePresentation(playback)
+                    }, onFailure: { [weak self] in
+                        await self?.expireHighPerformanceMedia()
                     })
                     hpDatagrams = media
+                    await MainActor.run {
+                        pipeline.onNeedsKeyframe = { [weak media] in
+                            Task { await media?.requestKeyframe() }
+                        }
+                    }
                     try await media.start(host: AppleHPUDPSocket.resolveIPv4(host: host), port: port)
-                    try await send(Data([0x12, 0, 0, 2, 0, 1, 0, 0]))
+                    try await send(bootstrap.encryptionReady)
                     try await send(cipher.encode(body: request))
                     try await send(cipher.encode(body: offer.message))
                     var fbu = Data([3, 0, 0, 0, 0, 0])
                     fbu.appendUInt16(header.readUInt16(at: 0)); fbu.appendUInt16(header.readUInt16(at: 2))
                     try await send(cipher.encode(body: fbu))
                     VNCControlDiagnostics.logger.notice("HP native media offer sent")
-                    for _ in 0..<128 {
-                        let prefix = try await readExactly(2)
+                    var parser = AppleHPControlParser()
+                    while !Task.isCancelled {
+                        let prefix = try await readExactly(2, timeoutEnabled: false)
                         let length = Int(prefix.readUInt16(at: 0))
                         guard length >= 32, length <= 65520, length % 16 == 0 else {
                             throw ClientError.invalidServerMessage("HP 암호화 레코드 길이 오류")
                         }
                         let bodies = try cipher.receive(bytes: prefix + (try await readExactly(length)))
                         for body in bodies {
-                            let type = body.first ?? 255
-                            if type == 0, body.count >= 16 {
-                                let encoding = body.readInt32(at: 12)
-                                VNCControlDiagnostics.logger.notice("HP rectangle encoding=\(encoding) bytes=\(body.count)")
-                                if encoding == 1010, body.count > 200 {
-                                    let url = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask)[0].appendingPathComponent("HPReply.bin")
-                                    try? body.write(to: url, options: .atomic)
+                            for event in try parser.append(body) {
+                                switch event {
+                                case .mediaAnswer(let answer):
+                                    guard let w = answer.video.width, let h = answer.video.height else {
+                                        throw ClientError.invalidServerMessage("고성능 영상 크기가 없습니다.")
+                                    }
+                                    try validateDimensions(width: w, height: h)
+                                    // Encoded pixel dimensions can be smaller than the
+                                    // remote desktop. Input coordinates remain in the
+                                    // ServerInit/DesktopSize coordinate space.
+                                    try await media.accept(answer)
+                                case .rekey(let payload): try cipher.installRekey(payload: payload)
+                                case .rectangle(let encoding, _, _, let w, let h, _):
+                                    guard encoding == -223 else {
+                                        throw ClientError.invalidServerMessage("미지원 고성능 화면 정보")
+                                    }
+                                    try validateDimensions(width: Int(w), height: Int(h))
+                                    width = Int(w); height = Int(h)
+                                    await model?.attachHighPerformance(playback, width: width, height: height, generation: generation)
+                                case .clipboard, .clipboardArchive, .bell, .mediaAnnouncement, .status: break
                                 }
-                            } else { VNCControlDiagnostics.logger.notice("HP control verified type=\(type) bytes=\(body.count)") }
+                            }
                         }
                     }
-                    throw ClientError.serverRejected("고성능 실험 수신 관측 완료")
+                    throw CancellationError()
                 } else if encoding == 1010 || encoding == 1011 {
                     let length = Int(try await readExactly(2).readUInt16(at: 0))
                     _ = try await readExactly(length)
@@ -660,13 +725,31 @@ private actor RFBClient {
     }
     #endif
 
+    private func expireHighPerformanceMedia() {
+        timeoutState.markExpired()
+        connection?.forceCancel()
+    }
+
+    private func awaitHighPerformancePresentation(_ playback: HighPerformancePlayback) {
+        guard hpPresentationTask == nil else { return }
+        hpPresentationTask = Task { [weak self] in
+            while !Task.isCancelled {
+                if await playback.hasDisplayedVideoFrame {
+                    await self?.highPerformanceBeganPlaying()
+                    return
+                }
+                do { try await Task.sleep(for: .milliseconds(50)) } catch { return }
+            }
+        }
+    }
+
     private func highPerformanceBeganPlaying() async {
-        guard !hasFrame else { return }
+        guard !hasFrame, connection != nil else { return }
         hasFrame = true
         firstFrameTimeout?.cancel(); firstFrameTimeout = nil
         await model?.setState(.connected, generation: generation)
         #if DEBUG
-        VNCControlDiagnostics.logger.notice("HP synchronized playback started")
+        VNCControlDiagnostics.logger.notice("HP first decoded video frame presented")
         #endif
     }
 
@@ -685,16 +768,19 @@ private actor RFBClient {
         VNCControlDiagnostics.logger.notice("first frame deadline expired")
         #endif
         timeoutState.markExpired()
-        connection?.cancel()
+        if usesHighPerformance { connection?.forceCancel() }
+        else { connection?.cancel() }
     }
 
     func close() {
+        hpPresentationTask?.cancel(); hpPresentationTask = nil
         hpCipher = nil
         if let hpDatagrams { Task { await hpDatagrams.close() } }
         hpDatagrams = nil
         firstFrameTimeout?.cancel()
         firstFrameTimeout = nil
-        connection?.cancel()
+        if usesHighPerformance { connection?.forceCancel() }
+        else { connection?.cancel() }
         connection = nil
         pixels.removeAll(keepingCapacity: false)
     }

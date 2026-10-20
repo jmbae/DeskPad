@@ -11,7 +11,13 @@ actor AppleHPDatagramTransport {
     private var videoControl: HighPerformanceSRTCPReceiver
     private let pipeline: HighPerformanceMediaPipeline
     private let onPlaying: () async -> Void
+    private let onFailure: () async -> Void
+    private var lastAuthenticatedPacket = ProcessInfo.processInfo.systemUptime
     private var didStart = false
+    private var negotiated = false
+    private var remoteVideoSSRC: UInt32?
+    private var remoteAudioSSRC: UInt32?
+    private var lastPictureLossRequest = -Double.infinity
     private var counts = [0, 0]
     private var rejected = [0, 0]
     private var active = true
@@ -22,8 +28,8 @@ actor AppleHPDatagramTransport {
     private let inbox = AppleHPDatagramInbox()
     private var receiverTask: Task<Void, Never>?
 
-    init(offer: AppleHPMediaOffer, pipeline: HighPerformanceMediaPipeline, onPlaying: @escaping () async -> Void) throws {
-        self.pipeline = pipeline; self.onPlaying = onPlaying
+    init(offer: AppleHPMediaOffer, pipeline: HighPerformanceMediaPipeline, onPlaying: @escaping () async -> Void, onFailure: @escaping () async -> Void) throws {
+        self.pipeline = pipeline; self.onPlaying = onPlaying; self.onFailure = onFailure
         heartbeat = try .init(masterKeyBlob: offer.audioKeys.viewerToServer, ssrc: offer.audioSSRC)
         videoFeedback = try .init(masterKeyBlob: offer.videoKeys.viewerToServer, ssrc: offer.videoSSRC)
         videoSSRC = offer.videoSSRC
@@ -63,6 +69,10 @@ actor AppleHPDatagramTransport {
     }
     private func pulse() {
         guard active, sockets.count == 2 else { return }
+        if negotiated, ProcessInfo.processInfo.systemUptime - lastAuthenticatedPacket > 15 {
+            failMedia()
+            return
+        }
         do {
             let timestamp = UInt32(truncatingIfNeeded: UInt64(ProcessInfo.processInfo.systemUptime * 48_000))
             let packet = try heartbeat.protect(payload: Data([0, 0x68, 0x34, 0]), payloadType: 101, timestamp: timestamp)
@@ -70,8 +80,35 @@ actor AppleHPDatagramTransport {
             var rr = Data([0x80, 201, 0, 1])
             rr.append(contentsOf: [UInt8(truncatingIfNeeded: videoSSRC >> 24), UInt8(truncatingIfNeeded: videoSSRC >> 16), UInt8(truncatingIfNeeded: videoSSRC >> 8), UInt8(truncatingIfNeeded: videoSSRC)])
             sockets[1].send(try videoFeedback.protect(rr))
-        } catch { close() }
+        } catch { failMedia() }
     }
+    func accept(_ answer: AppleHPMediaAnswer) throws {
+        guard !negotiated, answer.secondVideo == nil, answer.video.codecPayloadType == 123 else {
+            throw HighPerformanceMediaError.malformedPacket
+        }
+        remoteVideoSSRC = answer.video.ssrc
+        remoteAudioSSRC = answer.audio.ssrc
+        negotiated = true
+        lastAuthenticatedPacket = ProcessInfo.processInfo.systemUptime
+        requestKeyframe()
+    }
+
+    func requestKeyframe() {
+        let now = ProcessInfo.processInfo.systemUptime
+        guard active, sockets.count == 2, let remoteVideoSSRC, now - lastPictureLossRequest >= 0.5 else { return }
+        do {
+            let packet = AppleHPFeedback.pictureLoss(sender: videoSSRC, media: remoteVideoSSRC)
+            sockets[1].send(try videoFeedback.protect(packet))
+            lastPictureLossRequest = now
+        } catch { failMedia() }
+    }
+
+    private func failMedia() {
+        guard active else { return }
+        close()
+        Task { await onFailure() }
+    }
+
     func close() {
         active = false
         inbox.finish()
@@ -89,11 +126,12 @@ actor AppleHPDatagramTransport {
         return try video.receive(data)
     }
     private func consume(_ data: Data, stream: Int) async {
-        guard active, data.count >= 2 else { return }
+        guard active, negotiated, data.count >= 2 else { return }
         do {
             let isControl = (192...223).contains(data[data.startIndex + 1])
             if isControl {
                 let plain = try decodeControl(data, stream: stream)
+                lastAuthenticatedPacket = ProcessInfo.processInfo.systemUptime
                 let reports = try HighPerformanceSenderReport.parseCompound(plain)
                 try await pipeline.observe(reports, clockRate: stream == 0 ? 48000 : 90000)
                 #if DEBUG
@@ -101,6 +139,10 @@ actor AppleHPDatagramTransport {
                 #endif
             } else {
                 let packet = try decodeMedia(data, stream: stream)
+                lastAuthenticatedPacket = ProcessInfo.processInfo.systemUptime
+                guard packet.ssrc == (stream == 0 ? remoteAudioSSRC : remoteVideoSSRC) else {
+                    throw HighPerformanceMediaError.malformedPacket
+                }
                 if stream == 0 { try await pipeline.consumeAudioAccessUnit(packet) }
                 else { try await pipeline.consumeVideo(packet) }
                 if !didStart, await pipeline.isPlaying {
@@ -114,6 +156,12 @@ actor AppleHPDatagramTransport {
                 }
             }
         } catch {
+            if let playbackError = error as? HighPerformancePlaybackError {
+                switch playbackError {
+                case .backpressure: requestKeyframe()
+                default: failMedia(); return
+                }
+            }
             rejected[stream] += 1
             if rejected[stream] == 1 {
                 #if DEBUG
