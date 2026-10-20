@@ -45,7 +45,7 @@ final class RemoteInputTests: XCTestCase {
         _ = view.perform(NSSelectorFromString("handleHover:"), with: hover)
         let layer = try XCTUnwrap(view.layer.sublayers?.first { $0.name == "remote-cursor" })
         XCTAssertFalse(layer.isHidden)
-        XCTAssertEqual(layer.position, CGPoint(x: 149.5, y: 124))
+        XCTAssertEqual(layer.position, CGPoint(x: 149, y: 123))
         let interaction = try XCTUnwrap(view.interactions.first { $0 is UIPointerInteraction } as? UIPointerInteraction)
         XCTAssertNotNil(view.pointerInteraction(interaction, styleFor: UIPointerRegion(rect: view.bounds)))
         view.actualSize()
@@ -86,7 +86,7 @@ final class RemoteInputTests: XCTestCase {
         XCTAssertTrue(RemoteCursorPresentation(try XCTUnwrap(view.remoteCursor)).isHidden)
     }
 
-    func testLargeRemoteCursorRetainsTransmittedSizeAndFollowsViewportScale() throws {
+    func testLargeRemoteCursorRetainsLogicalPointSizeAcrossViewportChanges() throws {
         let shape = cursor(width: 128, height: 64, hotspotX: 8, hotspotY: 4, mask: Array(repeating: 1, count: 128 * 64))
         XCTAssertEqual(RemoteCursorPresentation(shape).size, CGSize(width: 128, height: 64))
         let view = RemoteDesktopUIView(frame: CGRect(x: 0, y: 0, width: 200, height: 200))
@@ -97,8 +97,8 @@ final class RemoteInputTests: XCTestCase {
         hover.testState = .changed
         _ = view.perform(NSSelectorFromString("handleHover:"), with: hover)
         let layer = try XCTUnwrap(view.layer.sublayers?.first { $0.name == "remote-cursor" })
-        XCTAssertEqual(layer.bounds.size, CGSize(width: 64, height: 32))
-        XCTAssertEqual(layer.position, CGPoint(x: 96, y: 98))
+        XCTAssertEqual(layer.bounds.size, CGSize(width: 128, height: 64))
+        XCTAssertEqual(layer.position, CGPoint(x: 92, y: 96))
         view.actualSize()
         XCTAssertEqual(layer.bounds.size, CGSize(width: 128, height: 64))
         XCTAssertEqual(layer.position, CGPoint(x: 92, y: 96))
@@ -109,14 +109,14 @@ final class RemoteInputTests: XCTestCase {
         XCTAssertEqual(layer.position, CGPoint(x: 192, y: 196))
     }
 
-    func testNativeShapeScalesWithoutThirtyTwoPointCap() throws {
+    func testNativeShapeKeepsLogicalSizeWithoutThirtyTwoPointCap() throws {
         let shape = cursor(width: 64, height: 64, hotspotX: 0, hotspotY: 0, mask: Array(repeating: 1, count: 64 * 64))
-        let presentation = RemoteCursorPresentation(shape, scale: 0.75)
-        XCTAssertEqual(presentation.size, CGSize(width: 48, height: 48))
+        let presentation = RemoteCursorPresentation(shape)
+        XCTAssertEqual(presentation.size, CGSize(width: 64, height: 64))
         guard case .path(let path) = try XCTUnwrap(presentation.nativeShape) else {
             return XCTFail("Top-left hotspot uses native path")
         }
-        XCTAssertEqual(path.bounds.size, CGSize(width: 48, height: 48))
+        XCTAssertEqual(path.bounds.size, CGSize(width: 64, height: 64))
     }
 
     func testTouchShowsActualRemoteCursorWithoutDecorativeRing() throws {

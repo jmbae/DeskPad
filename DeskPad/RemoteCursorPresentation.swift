@@ -11,15 +11,18 @@ struct RemoteCursorPresentation {
     let nativeShape: UIPointerShape?
     let isHidden: Bool
 
-    init(_ cursor: RFBCursorShape, scale: CGFloat = 1) {
-        guard scale.isFinite, scale > 0, cursor.width > 0, cursor.height > 0,
+    init(_ cursor: RFBCursorShape) {
+        guard cursor.width > 0, cursor.height > 0,
               cursor.width <= 512, cursor.height <= 512,
               cursor.rgba.count == cursor.width * cursor.height * 4 else {
             image = nil; size = .zero; hotspot = .zero; nativeShape = nil; isHidden = true
             return
         }
-        size = CGSize(width: CGFloat(cursor.width) * scale, height: CGFloat(cursor.height) * scale)
-        hotspot = CGPoint(x: CGFloat(cursor.hotspotX) * scale, y: CGFloat(cursor.hotspotY) * scale)
+        // Cursor dimensions are logical pointer points, independent of the
+        // framebuffer fit/zoom. Scaling an 18pt cursor with a 6K desktop would
+        // make it nearly invisible; enlarged server cursors must not be capped.
+        size = CGSize(width: CGFloat(cursor.width), height: CGFloat(cursor.height))
+        hotspot = CGPoint(x: CGFloat(cursor.hotspotX), y: CGFloat(cursor.hotspotY))
         let bytes = [UInt8](cursor.rgba)
         var monochrome = true
         var rows: [(min: Int, max: Int)?] = []
@@ -37,8 +40,8 @@ struct RemoteCursorPresentation {
                     last = x
                     if run == nil { run = x }
                 } else if let start = run {
-                    path.append(UIBezierPath(rect: CGRect(x: CGFloat(start) * scale, y: CGFloat(y) * scale,
-                                                         width: CGFloat(x - start) * scale, height: scale)))
+                    path.append(UIBezierPath(rect: CGRect(x: CGFloat(start), y: CGFloat(y),
+                                                         width: CGFloat(x - start), height: 1)))
                     run = nil
                 }
             }

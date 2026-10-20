@@ -49,12 +49,13 @@ final class RemoteDesktopUIView: UIView {
     var remoteCursor: RFBCursorShape? {
         didSet {
             guard remoteCursor != oldValue else { return }
-            refreshCursorPresentation(force: true)
+            cursorPresentation = remoteCursor.map(RemoteCursorPresentation.init)
+            cursorLayer.contents = cursorPresentation?.image
+            pointerInteraction.invalidate()
             updatePointerMarker()
         }
     }
     private var cursorPresentation: RemoteCursorPresentation?
-    private var cursorPresentationScale: CGFloat?
     private let cursorLayer = CALayer()
     private lazy var pointerInteraction = UIPointerInteraction(delegate: self)
     private var hasPointerPosition = false
@@ -215,18 +216,7 @@ final class RemoteDesktopUIView: UIView {
                       width: rect.width * zoomScale, height: rect.height * zoomScale).intersection(bounds)
     }
 
-    private func refreshCursorPresentation(force: Bool = false) {
-        let scale = desktopSize.width > 0 && bounds.width > 0 && bounds.height > 0
-            ? calculateDisplayRect().width / desktopSize.width * zoomScale : 1
-        guard force || cursorPresentationScale != scale else { return }
-        cursorPresentationScale = scale
-        cursorPresentation = remoteCursor.map { RemoteCursorPresentation($0, scale: scale) }
-        cursorLayer.contents = cursorPresentation?.image
-        pointerInteraction.invalidate()
-    }
-
     private func updatePointerMarker() {
-        refreshCursorPresentation()
         guard hasPointerPosition, let cursor = cursorPresentation,
               !cursor.isHidden, desktopSize.width > 0, desktopSize.height > 0,
               bounds.width > 0, bounds.height > 0 else {
@@ -793,7 +783,6 @@ extension RemoteDesktopUIView: UIPointerInteractionDelegate {
     }
 
     func pointerInteraction(_ interaction: UIPointerInteraction, styleFor region: UIPointerRegion) -> UIPointerStyle? {
-        refreshCursorPresentation()
         guard let cursor = cursorPresentation else { return nil }
         if let shape = cursor.nativeShape { return UIPointerStyle(shape: shape, constrainedAxes: []) }
         // Explicitly empty cursors and precise bitmap fallback both hide the
