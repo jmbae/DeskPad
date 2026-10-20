@@ -18,7 +18,7 @@ import Foundation
             }
         }
         func signalServer() throws { try Data().write(to: marker) }
-        func connect() { model.connect(to: SavedConnection(id: UUID(), name: "Test", host: "127.0.0.1", port: port, username: ["apple", "apple-failure"].contains(mode) ? "alice" : "", lastConnected: nil), password: ["apple", "apple-failure", "vnc33"].contains(mode) ? "secret" : nil, colorQuality: mode == "rgb565" ? .balanced : mode == "rgb332" ? .lowLatency : .fullColor) }
+        func connect() { model.connect(to: SavedConnection(id: UUID(), name: "Test", host: "127.0.0.1", port: port, username: ["apple", "apple-failure"].contains(mode) ? "alice" : "", lastConnected: nil), password: ["apple", "apple-failure", "vnc33"].contains(mode) ? "secret" : nil, colorQuality: mode == "rgb565" ? .lowLatency : .fullColor) }
         if mode == "deinit" {
             weak var probe: VNCSessionModel?
             do {
@@ -37,9 +37,9 @@ import Foundation
             return
         }
         connect()
-        if ["rgb565", "rgb332"].contains(mode) {
+        if mode == "rgb565" {
             try await waitUntil("reduced-color frame") { model.state == .connected }
-            let expected: [UInt8] = mode == "rgb565" ? [140, 142, 41, 255] : [146, 146, 85, 255]
+            let expected: [UInt8] = [140, 142, 41, 255]
             precondition(model.framebuffer == Data(expected))
             try signalServer()
             try await waitUntil("reduced-color Raw fallback") { model.framebuffer == Data([255,255,255,255]) }

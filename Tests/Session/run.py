@@ -23,8 +23,8 @@ def serve_disconnect(listener, mode, marker):
             c.sendall(struct.pack('>HH',1,1)+b'\0'*16+struct.pack('>I',0))
             pixel_format=exact(c,20); count=struct.unpack('>H',exact(c,4)[2:])[0]; encodings=struct.unpack('>'+'i'*count,exact(c,count*4)); exact(c,10)
             if mode.startswith('zrle'): assert encodings[0]==16 and 0 in encodings
-            if mode in ('rgb565','rgb332'):
-                expected_format=bytes([16,16,0,1,0,31,0,63,0,31,11,5,0,0,0,0]) if mode=='rgb565' else bytes([32,8,0,1,0,7,0,7,0,3,5,2,0,0,0,0])
+            if mode=='rgb565':
+                expected_format=bytes([16,16,0,1,0,31,0,63,0,31,11,5,0,0,0,0])
                 assert pixel_format==b'\0'*4+expected_format
             rectangle=b'\0\0\0\x01'+struct.pack('>HHHHi',0,0,1,1,0)
             if attempt==0:
@@ -89,12 +89,12 @@ def serve(listener, mode, marker):
             c.sendall(struct.pack('>HH',*dimensions)+b'\0'*16+struct.pack('>I',0))
             pixel_format=exact(c,20); count=struct.unpack('>H',exact(c,4)[2:])[0]; encodings=struct.unpack('>'+'i'*count,exact(c,count*4)); exact(c,10)
             if mode.startswith('zrle'): assert encodings[0]==16 and 0 in encodings
-            if mode in ('rgb565','rgb332'):
-                expected_format=bytes([16,16,0,1,0,31,0,63,0,31,11,5,0,0,0,0]) if mode=='rgb565' else bytes([32,8,0,1,0,7,0,7,0,3,5,2,0,0,0,0])
+            if mode=='rgb565':
+                expected_format=bytes([16,16,0,1,0,31,0,63,0,31,11,5,0,0,0,0])
                 assert pixel_format==b'\0'*4+expected_format
             stage = 'activity'
-            if mode in ('rgb565','rgb332'):
-                value=bytes([0x65,0x8c]) if mode=='rgb565' else bytes([0x91,0,0])
+            if mode=='rgb565':
+                value=bytes([0x65,0x8c])
                 compressor=zlib.compressobj()
                 payload=compressor.compress(b'\x01'+value)+compressor.flush(zlib.Z_SYNC_FLUSH)
                 c.sendall(b'\0\0\0\x01'+struct.pack('>HHHHi',0,0,1,1,16)+struct.pack('>I',len(payload))+payload)
@@ -193,7 +193,7 @@ def serve(listener, mode, marker):
         if stage != 'activity' or mode not in ('terminal-error','first-frame-timeout','resize-timeout'):
             errors.append(AssertionError(f'{mode}: unexpected disconnect before all protocol assertions completed: {error}'))
     except Exception as error: errors.append(error)
-for mode in ['rgb565','rgb332','zrle','zrle-bounds','zrle-length','zrle-bomb','zrle-palette','zrle-timeout','remote-close','remote-reset','remote-payload-close','slow-raw','first-frame','reconnect','malformed','clipboard','apple','apple-failure','vnc33','deinit','terminal-error','resize-release','first-frame-timeout','resize-timeout']:
+for mode in ['rgb565','zrle','zrle-bounds','zrle-length','zrle-bomb','zrle-palette','zrle-timeout','remote-close','remote-reset','remote-payload-close','slow-raw','first-frame','reconnect','malformed','clipboard','apple','apple-failure','vnc33','deinit','terminal-error','resize-release','first-frame-timeout','resize-timeout']:
     selected = next((arg.split('=', 1)[1] for arg in sys.argv if arg.startswith('--case=')), None)
     if selected and mode != selected: continue
     if '--resize-only' in sys.argv and mode!='resize-timeout': continue
