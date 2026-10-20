@@ -411,6 +411,7 @@ private actor RFBClient {
     private weak var model: VNCSessionModel?
     private let generation: UUID
     private let timeoutState = RFBTimeoutState()
+    private let hpTerminalFailure = AppleHPTerminalFailure()
     private var usesAppleExtensions = false
     private let appleCursorCache = RFBAppleCursorCache()
     private let pixelFormat: RFBPixelFormat
@@ -674,8 +675,8 @@ private actor RFBClient {
                     await model?.attachHighPerformance(playback, width: width, height: height, generation: generation)
                     let media = try AppleHPDatagramTransport(offer: offer, videoPayloadType: 100, pipeline: pipeline, onPlaying: { [weak self] in
                         await self?.awaitHighPerformancePresentation(playback)
-                    }, onFailure: { [weak self] in
-                        await self?.expireHighPerformanceMedia()
+                    }, onFailure: { [weak self] reason in
+                        await self?.expireHighPerformanceMedia(reason)
                     })
                     hpDatagrams = media
                     await MainActor.run {
@@ -749,8 +750,8 @@ private actor RFBClient {
     }
 
 
-    private func expireHighPerformanceMedia() {
-        timeoutState.markExpired()
+    private func expireHighPerformanceMedia(_ reason: AppleHPFailure) {
+        hpTerminalFailure.record(reason)
         connection?.forceCancel()
     }
 
@@ -860,7 +861,8 @@ private actor RFBClient {
     }
 
     private nonisolated func receiveError(_ detail: String) -> Error {
-        timeoutState.didExpire
+        if let failure = hpTerminalFailure.value { return failure }
+        return timeoutState.didExpire
             ? ClientError.connection("서버 응답 시간이 초과되었습니다.")
             : RFBConnectionClosed(detail: detail)
     }

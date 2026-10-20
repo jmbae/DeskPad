@@ -11,7 +11,7 @@ actor AppleHPDatagramTransport {
     private var videoControl: HighPerformanceSRTCPReceiver
     private let pipeline: HighPerformanceMediaPipeline
     private let onPlaying: () async -> Void
-    private let onFailure: () async -> Void
+    private let onFailure: (AppleHPFailure) async -> Void
     private var lastAuthenticatedPacket = ProcessInfo.processInfo.systemUptime
     private var didStart = false
     private var negotiated = false
@@ -29,7 +29,7 @@ actor AppleHPDatagramTransport {
     private let inbox = AppleHPDatagramInbox()
     private var receiverTask: Task<Void, Never>?
 
-    init(offer: AppleHPMediaOffer, videoPayloadType: UInt8 = 123, pipeline: HighPerformanceMediaPipeline, onPlaying: @escaping () async -> Void, onFailure: @escaping () async -> Void) throws {
+    init(offer: AppleHPMediaOffer, videoPayloadType: UInt8 = 123, pipeline: HighPerformanceMediaPipeline, onPlaying: @escaping () async -> Void, onFailure: @escaping (AppleHPFailure) async -> Void) throws {
         self.expectedVideoPayloadType = videoPayloadType
         self.pipeline = pipeline; self.onPlaying = onPlaying; self.onFailure = onFailure
         heartbeat = try .init(masterKeyBlob: offer.audioKeys.viewerToServer, ssrc: offer.audioSSRC)
@@ -73,7 +73,7 @@ actor AppleHPDatagramTransport {
         guard active, sockets.count == 2 else { return }
         if negotiated, !didStart { requestKeyframe() }
         if negotiated, ProcessInfo.processInfo.systemUptime - lastAuthenticatedPacket > 15 {
-            failMedia()
+            failMedia(.mediaIdleTimeout)
             return
         }
         do {
@@ -86,11 +86,11 @@ actor AppleHPDatagramTransport {
             var rr = Data([0x80, 201, 0, 1])
             rr.append(contentsOf: [UInt8(truncatingIfNeeded: videoSSRC >> 24), UInt8(truncatingIfNeeded: videoSSRC >> 16), UInt8(truncatingIfNeeded: videoSSRC >> 8), UInt8(truncatingIfNeeded: videoSSRC)])
             sockets[0].send(try videoFeedback.protect(rr))
-        } catch { failMedia() }
+        } catch { failMedia(.playbackFailure) }
     }
     func accept(_ answer: AppleHPMediaAnswer) throws {
         guard !negotiated, answer.secondVideo == nil, answer.video.codecPayloadType == expectedVideoPayloadType else {
-            throw HighPerformanceMediaError.malformedPacket
+            throw AppleHPFailure.unsupportedVideoLayout
         }
         #if DEBUG
         VNCControlDiagnostics.logger.notice("HP answer status=\(answer.status) videoPT=\(answer.video.codecPayloadType ?? 0) width=\(answer.video.width ?? 0) height=\(answer.video.height ?? 0)")
@@ -99,7 +99,7 @@ actor AppleHPDatagramTransport {
         // requests one picture; depacketization independently rejects a second SSRC.
         if answer.video.descriptionFields[6] != nil {
             let tiles = try AppleHPProtoValue.oneNumber(answer.video.descriptionFields, 6)
-            guard tiles <= 1 else { throw HighPerformanceMediaError.malformedPacket }
+            guard tiles <= 1 else { throw AppleHPFailure.unsupportedVideoLayout }
         }
         remoteVideoSSRC = answer.video.ssrc
         remoteAudioSSRC = answer.audio.ssrc
@@ -115,13 +115,13 @@ actor AppleHPDatagramTransport {
             let packet = AppleHPFeedback.pictureLoss(sender: videoSSRC, media: remoteVideoSSRC)
             sockets[0].send(try videoFeedback.protect(packet))
             lastPictureLossRequest = now
-        } catch { failMedia() }
+        } catch { failMedia(.playbackFailure) }
     }
 
-    private func failMedia() {
+    private func failMedia(_ reason: AppleHPFailure) {
         guard active else { return }
         close()
-        Task { await onFailure() }
+        Task { await onFailure(reason) }
     }
 
     func close() {
@@ -168,7 +168,7 @@ actor AppleHPDatagramTransport {
                 guard packet.ssrc == (stream == 0 ? remoteAudioSSRC : remoteVideoSSRC) else {
                     // Authentication has succeeded. A second video SSRC is an
                     // unsupported tiled session, not an unauthenticated stray packet.
-                    if stream == 1 { failMedia(); return }
+                    if stream == 1 { failMedia(.unsupportedVideoLayout); return }
                     throw HighPerformanceMediaError.malformedPacket
                 }
                 if stream == 0 { try await pipeline.consumeAudioAccessUnit(packet) }
@@ -187,7 +187,7 @@ actor AppleHPDatagramTransport {
             if let playbackError = error as? HighPerformancePlaybackError {
                 switch playbackError {
                 case .backpressure: requestKeyframe()
-                default: failMedia(); return
+                default: failMedia(.playbackFailure); return
                 }
             }
             rejected[stream] += 1
