@@ -178,6 +178,7 @@ final class HighPerformanceSampleFactory {
 
     #if DEBUG
     private var diagnosticPresentationPolls = 0
+    private var audioDiagnostic = HighPerformanceAudioDiagnostic()
     #endif
     var presentationSeconds: Double { CMTimeGetSeconds(synchronizer.currentTime()) }
 
@@ -226,12 +227,18 @@ final class HighPerformanceSampleFactory {
         guard audioRenderer.status != .failed else { throw HighPerformancePlaybackError.rendererFailed }
         guard audioRenderer.isReadyForMoreMediaData else { throw HighPerformancePlaybackError.backpressure }
         audioRenderer.enqueue(sample)
+        #if DEBUG
+        audioDiagnostic.inspect(sample, clock: presentationSeconds)
+        #endif
     }
 
     func reset() {
         synchronizer.setRate(0, time: .zero)
         videoLayer.sampleBufferRenderer.flush(removingDisplayedImage: true)
         audioRenderer.flush()
+        #if DEBUG
+        audioDiagnostic = HighPerformanceAudioDiagnostic()
+        #endif
     }
 }
 
@@ -244,3 +251,82 @@ private func makeBlock(_ data: Data) throws -> CMBlockBuffer {
     try data.withUnsafeBytes { try requireStatus(CMBlockBufferReplaceDataBytes(with: $0.baseAddress!, blockBuffer: block, offsetIntoDestination: 0, dataLength: data.count)) }
     return block
 }
+
+#if DEBUG
+/// Independent native decode for bounded, content-free audio acceptance metrics.
+/// This measures received PCM, not speaker output or perceived A/V synchronization.
+private final class HighPerformanceAudioDiagnostic {
+    private var converter: AudioConverterRef?
+    private var packetFrames: UInt32 = 480
+    private var channels: UInt32 = 2
+    private var count = 0
+    private var nonSilent = 0
+    private var maximumPeak: Float = 0
+    private var decodedFrames: UInt64 = 0
+
+    func inspect(_ sample: CMSampleBuffer, clock: Double) {
+        count += 1
+        do {
+            let format = CMSampleBufferGetFormatDescription(sample)!
+            if converter == nil {
+                var source = CMAudioFormatDescriptionGetStreamBasicDescription(format)!.pointee
+                guard source.mSampleRate > 0, source.mChannelsPerFrame <= 2, source.mFramesPerPacket <= 4096 else { return }
+                channels = source.mChannelsPerFrame; packetFrames = source.mFramesPerPacket
+                var target = AudioStreamBasicDescription(mSampleRate: source.mSampleRate, mFormatID: kAudioFormatLinearPCM,
+                    mFormatFlags: kAudioFormatFlagIsFloat | kAudioFormatFlagIsPacked, mBytesPerPacket: channels * 4,
+                    mFramesPerPacket: 1, mBytesPerFrame: channels * 4, mChannelsPerFrame: channels, mBitsPerChannel: 32, mReserved: 0)
+                try requireStatus(AudioConverterNew(&source, &target, &converter))
+                var size = 0
+                guard let cookie = CMAudioFormatDescriptionGetMagicCookie(format, sizeOut: &size), let converter else { return }
+                try requireStatus(AudioConverterSetProperty(converter, kAudioConverterDecompressionMagicCookie, UInt32(size), cookie))
+                VNCControlDiagnostics.logger.notice("HP audio decode profile rate=\(source.mSampleRate) channels=\(source.mChannelsPerFrame) frames_per_packet=\(source.mFramesPerPacket) codec=\(source.mFormatID)")
+            }
+            guard let converter, let block = CMSampleBufferGetDataBuffer(sample) else { return }
+            let length = CMBlockBufferGetDataLength(block)
+            guard length > 0, length <= 65535 else { return }
+            let input = Input(count: length)
+            try requireStatus(CMBlockBufferCopyDataBytes(block, atOffset: 0, dataLength: length, destination: input.bytes))
+            var pcm = [Float](repeating: 0, count: 4096 * Int(channels))
+            var frames: UInt32 = 4096
+            let status = pcm.withUnsafeMutableBytes { output -> OSStatus in
+                var buffers = AudioBufferList(mNumberBuffers: 1, mBuffers: AudioBuffer(mNumberChannels: channels, mDataByteSize: UInt32(output.count), mData: output.baseAddress))
+                return AudioConverterFillComplexBuffer(converter, { _, count, buffers, descriptions, context in
+                    let input = Unmanaged<Input>.fromOpaque(context!).takeUnretainedValue()
+                    guard !input.delivered else { count.pointee = 0; return noErr }
+                    input.delivered = true; count.pointee = 1
+                    buffers.pointee = AudioBufferList(mNumberBuffers: 1, mBuffers: AudioBuffer(mNumberChannels: 2, mDataByteSize: UInt32(input.count), mData: input.bytes))
+                    descriptions?.pointee = input.description
+                    return noErr
+                }, Unmanaged.passUnretained(input).toOpaque(), &frames, &buffers, nil)
+            }
+            try requireStatus(status)
+            let peak = pcm.prefix(Int(frames * channels)).reduce(Float(0)) { max($0, abs($1)) }
+            decodedFrames += UInt64(frames); maximumPeak = max(maximumPeak, peak)
+            if peak > 0.001 { nonSilent += 1 }
+            if count <= 2 || count % 100 == 0 || (peak > 0.001 && nonSilent <= 2) {
+                let pts = CMTimeGetSeconds(CMSampleBufferGetPresentationTimeStamp(sample))
+                VNCControlDiagnostics.logger.notice("HP audio PCM packets=\(self.count) non_silent=\(self.nonSilent) decoded_frames=\(self.decodedFrames) peak=\(self.maximumPeak) sample_pts=\(pts) playback_clock=\(clock) queued_ahead=\(pts-clock)")
+                maximumPeak = 0
+            }
+        } catch {
+            if count <= 2 || count % 100 == 0 {
+                let code = (error as NSError).code
+                VNCControlDiagnostics.logger.notice("HP audio diagnostic decode failed count=\(self.count) error=\(code)")
+            }
+        }
+    }
+    deinit { if let converter { AudioConverterDispose(converter) } }
+    private final class Input {
+        let bytes: UnsafeMutableRawPointer
+        let count: Int
+        let description: UnsafeMutablePointer<AudioStreamPacketDescription>
+        var delivered = false
+        init(count: Int) {
+            self.count = count; bytes = .allocate(byteCount: count, alignment: 1)
+            description = .allocate(capacity: 1)
+            description.initialize(to: AudioStreamPacketDescription(mStartOffset: 0, mVariableFramesInPacket: 0, mDataByteSize: UInt32(count)))
+        }
+        deinit { bytes.deallocate(); description.deinitialize(count: 1); description.deallocate() }
+    }
+}
+#endif
