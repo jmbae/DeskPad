@@ -39,3 +39,37 @@ Protocol evidence, investigated read-only:
 
 Source reference is AGPL; implementation here is independently authored from
 protocol facts, using no copied implementation. No live-host test was performed.
+
+## Mirror-only bootstrap
+
+```sh
+swiftc -swift-version 6 DeskPad/AppleHPMirrorHandshake.swift Tests/HPLifecycle/MirrorHarness.swift -o /tmp/deskpad-hp-mirror-test
+/tmp/deskpad-hp-mirror-test
+```
+
+ClientInit 0xC1 is used by both mirror and curtain sessions. The reference's
+`protocol/negotiation.py:_phase_handshake_plaintext` enables curtain by sending
+0x1d SetDisplayConfiguration; the `curtain=False` branch skips that message.
+The mirror builder preserves ClientInit, ViewerInfo, encryption setup and caller
+selected encodings, with no display mutation API. Its wire profile constants
+are compatibility identifiers, not a claim that DeskPad is Screen Sharing.app.
+This is code/protocol evidence; mirror playback has not been live-validated.
+Do not infer that merely omitting display configuration proves host invariance.
+
+## Server identity integration
+
+AppleHPAuthentication.verifyKey runs immediately after RSA DER parsing and
+before wrapping/sending credentials. Never replace it with an empty closure.
+The app's current CredentialKeychain stores passwords; there is no existing
+server-pin confirmation UI. Add a separate Keychain service for HP server pins,
+keyed by normalized connection endpoint (host plus port, not resolved IP and not
+username). Hash the server's validated DER with SHA-256 and compare exactly.
+
+On first contact, present host/port and fingerprint and suspend authentication
+until explicit user trust or cancellation. This is trust-on-first-use, not
+independent proof of identity. For changed keys, stop authentication and show old
+and new fingerprints; never silently overwrite a saved pin. A successful user
+approval persists the exact observed key hash before authentication continues.
+Use connection-generation identity so a late approval cannot trust a subsequent
+connection. Do not log DER or credentials. Pin trust must be revocable separately
+from password deletion. Password presence is not consent to trust an unseen key.
