@@ -2,10 +2,12 @@ import Foundation
 import CoreMedia
 @MainActor final class Sink: HighPerformanceMediaOutput {
     var presentationSeconds: Double = 0
-    var startTimes:[Double]=[]; var audio:[Double]=[];var video:[Double]=[]
+    var startTimes:[Double]=[]; var audio:[Double]=[];var video:[Double]=[]; var hiddenVideo = 0
     func start(at seconds:Double,playoutDelay:Double)throws { startTimes.append(seconds) }
     func enqueueAudio(_ sample:CMSampleBuffer)throws { audio.append(CMTimeGetSeconds(CMSampleBufferGetPresentationTimeStamp(sample))) }
-    func enqueueVideo(_ sample:CMSampleBuffer)throws { video.append(CMTimeGetSeconds(CMSampleBufferGetPresentationTimeStamp(sample))) }
+    func enqueueVideo(_ sample:CMSampleBuffer)throws {
+        if let array = CMSampleBufferGetSampleAttachmentsArray(sample, createIfNecessary: false) as? [[CFString: Any]], array.first?[kCMSampleAttachmentKey_DoNotDisplay] as? Bool == true { hiddenVideo += 1 }
+        video.append(CMTimeGetSeconds(CMSampleBufferGetPresentationTimeStamp(sample))) }
     func reset() { audio=[];video=[];startTimes=[] }
 }
 @main struct Harness {
@@ -50,6 +52,20 @@ import CoreMedia
     for ssrc in UInt32(3)...5 { try pipeline.consumeVideo(packet(Data([0x09,0x10]),seq:1,ssrc:ssrc,ts:0,pt:100)) }
     do { try pipeline.consumeVideo(packet(Data([0x09,0x10]),seq:1,ssrc:6,ts:0,pt:100)); fatalError("unbounded video SSRCs") } catch {}
     do { try pipeline.consumeAudioAccessUnit(packet(Data([1]),seq:1,ssrc:1,ts:0,pt:101)); fatalError("shared audio/video SSRC") } catch {}
+    let delayedSink = Sink()
+    let delayed = try HighPerformanceMediaPipeline(output: delayedSink)
+    var sequence: UInt16 = 0
+    for nal in units { try delayed.consumeVideo(packet(nal,seq:sequence,ssrc:30,ts:0,pt:100,marker:nal == units.last)); sequence += 1 }
+    for n in 1...30 { try delayed.consumeVideo(packet(Data([0x61,0xc0]),seq:sequence,ssrc:30,ts:UInt32(n*3000),pt:100)); sequence += 1 }
+    precondition(delayed.pendingVideoCount == 31 && delayedSink.video.isEmpty, "initial dependency chain dropped before SR")
+    try delayed.observe([HighPerformanceSenderReport(ssrc:30,ntpSeconds:300,ntpFraction:0,rtpTimestamp:0)],clockRate:90000)
+    precondition(delayedSink.video.count == 31 && delayedSink.hiddenVideo == 30, "catchup must decode old references without displaying backlog")
+    precondition(delayedSink.startTimes == [1], "startup must use newest PTS, not add one second latency")
+    let bounded = try HighPerformanceMediaPipeline(output: Sink())
+    sequence = 0
+    for nal in units { try bounded.consumeVideo(packet(nal,seq:sequence,ssrc:40,ts:0,pt:100,marker:nal == units.last)); sequence += 1 }
+    for n in 1...120 { try bounded.consumeVideo(packet(Data([0x61,0xc0]),seq:sequence,ssrc:40,ts:UInt32(n*3000),pt:100)); sequence += 1 }
+    precondition(bounded.pendingVideoCount == 0, "overflow must discard whole dependent chain")
     let alternate=try HighPerformanceMediaPipeline(output:Sink(),videoPayloadType:123)
     try alternate.consumeVideo(packet(Data([0x09,0x10]),seq:1,ssrc:77,ts:0,pt:123))
     do { try alternate.consumeVideo(packet(Data([0x09,0x10]),seq:2,ssrc:77,ts:1,pt:100)); fatalError("unnegotiated video PT accepted") } catch {}

@@ -19,6 +19,44 @@ import AudioToolbox
     @Test func red444HEVCDisplays() async throws {
         try await verifyPresentation(Data(base64Encoded: "AAAAAUABDAH//wQIAAADAJ4IAAADAAAelZgJAAAAAUIBAQQIAAADAJ4IAAADAAAekAQQILLKzSSZXgLQEAAAAwAQAAADAeCAAAAAAUQBwXKGDEIkAAAAASgBrwhg+e6Xf/aVn9oFLijUaQcu")!, hevc: true)
     }
+    @Test func delayedSenderReportPreserves120FrameChain() async throws {
+        let playback = HighPerformancePlayback()
+        let pipeline = try HighPerformanceMediaPipeline(output: playback, videoPayloadType: 100, videoCodec: .hevc)
+        let scene = try #require(UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }.first)
+        let window = UIWindow(windowScene: scene); window.rootViewController = UIViewController(); window.makeKeyAndVisible()
+        playback.videoLayer.frame = CGRect(x: 0, y: 0, width: 256, height: 256)
+        window.rootViewController!.view.layer.addSublayer(playback.videoLayer)
+        defer { pipeline.reset(); window.isHidden = true }
+        let bytes = [UInt8](Data(base64Encoded: "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")!)
+        var units: [Data] = []; var begin = 4; var cursor = 4
+        while cursor + 3 < bytes.count {
+            if Array(bytes[cursor..<(cursor+4)]) == [0,0,0,1] { units.append(Data(bytes[begin..<cursor])); begin = cursor + 4; cursor += 4 }
+            else { cursor += 1 }
+        }
+        units.append(Data(bytes[begin...]))
+        var ap = Data([96,1])
+        for unit in units where (32...34).contains(Int((unit.first! >> 1) & 63)) {
+            ap.append(contentsOf: [UInt8(unit.count>>8),UInt8(unit.count&255)]); ap.append(unit)
+        }
+        var sequence: UInt16 = 0
+        func send(_ payload: Data, timestamp: UInt32) throws {
+            var data = Data([0x80,228,UInt8(sequence>>8),UInt8(truncatingIfNeeded:sequence)])
+            sequence &+= 1
+            for number: UInt32 in [timestamp,1] { data.append(contentsOf: [UInt8(truncatingIfNeeded:number>>24),UInt8(truncatingIfNeeded:number>>16),UInt8(truncatingIfNeeded:number>>8),UInt8(truncatingIfNeeded:number)]) }
+            data.append(payload); try pipeline.consumeVideo(HighPerformanceRTPPacket(data))
+        }
+        try send(ap,timestamp: 999)
+        var frame: UInt32 = 0
+        for unit in units where (unit.first! >> 1) & 63 < 32 { try send(unit,timestamp: frame*3000); frame += 1 }
+        #expect(frame == 120 && pipeline.pendingVideoCount == 120)
+        try pipeline.observe([HighPerformanceSenderReport(ssrc:1,ntpSeconds:100,ntpFraction:0,rtpTimestamp:0)],clockRate:90000)
+        for _ in 0..<100 {
+            if playback.hasDisplayedVideoFrame && playback.presentationSeconds >= 119.0/30.0 { break }
+            try await Task.sleep(for: .milliseconds(20))
+        }
+        #expect(playback.hasDisplayedVideoFrame)
+        #expect(playback.presentationSeconds >= 119.0/30.0)
+    }
     private func verifyPresentation(_ frame: Data, hevc: Bool = false) async throws {
         let playback = HighPerformancePlayback()
         let factory = HighPerformanceSampleFactory()

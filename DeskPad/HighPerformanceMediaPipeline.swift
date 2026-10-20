@@ -123,7 +123,7 @@ extension HighPerformancePlayback: HighPerformanceMediaOutput {}
             if !hasSlice { _ = try state.factory.h264AccessUnit(annexB(units), presentationSeconds: 0); return }
             if needsKeyframe && !keyframe { return }
             needsKeyframe = false
-            if pendingVideo.count == 2 {
+            if !canBufferVideo(bytes: units.reduce(0) { $0 + $1.count + 4 }) {
                 loseVideoContinuity()
                 guard keyframe else { return }
                 needsKeyframe = false
@@ -180,7 +180,7 @@ extension HighPerformancePlayback: HighPerformanceMediaOutput {}
         let keyframe = picture.allSatisfy { (16...20).contains(Int(($0.first! >> 1) & 63)) }
         if needsKeyframe && !keyframe { return }
         needsKeyframe = false
-        if pendingVideo.count == 2 {
+        if !canBufferVideo(bytes: units.reduce(0) { $0 + $1.count }) {
             loseVideoContinuity()
             guard keyframe else { return }
             needsKeyframe = false
@@ -213,6 +213,17 @@ extension HighPerformancePlayback: HighPerformanceMediaOutput {}
         // Keep the successfully negotiated audio format; it carries no session time/key state.
     }
 
+    private func canBufferVideo(bytes: Int) -> Bool {
+        // Sender Reports may trail the first IDR by a second. Preserve its
+        // dependency chain while waiting, but cap both packet-independent bytes
+        // and frame count. Once playing, the normal short queue remains in use.
+        let limit = isPlaying ? 2 : 120
+        let bufferedBytes = pendingVideo.reduce(0) { sum, frame in
+            sum + (frame.hevcUnits?.reduce(0) { $0 + $1.count } ?? frame.annexB.count)
+        }
+        return pendingVideo.count < limit && bufferedBytes + bytes <= 12 * 1024 * 1024
+    }
+
     private func loseVideoContinuity() {
         pendingVideo.removeAll(); needsKeyframe = true; onNeedsKeyframe?()
     }
@@ -221,10 +232,10 @@ extension HighPerformancePlayback: HighPerformanceMediaOutput {}
         if !isPlaying {
             // Silent desktops need not emit audio. Video can start with its own SR;
             // audio remains bounded until its independent NTP mapping is available.
-            guard let video = pendingVideo.first,
+            guard let video = pendingVideo.last,
                   let start = clock.presentationSeconds(ssrc: video.ssrc, timestamp: video.timestamp) else { return }
             do {
-                try enqueuePending()
+                try enqueuePending(catchingUpTo: start)
                 #if DEBUG
                 VNCControlDiagnostics.logger.notice("HP media starting clock pts=\(start)")
                 #endif
@@ -237,13 +248,18 @@ extension HighPerformancePlayback: HighPerformanceMediaOutput {}
         } else { try enqueuePending() }
     }
 
-    private func enqueuePending() throws {
+    private func enqueuePending(catchingUpTo startupPTS: Double? = nil) throws {
         while let video = pendingVideo.first {
             guard let pts = clock.presentationSeconds(ssrc: video.ssrc, timestamp: video.timestamp), let factory = videos[video.ssrc]?.factory else { break }
             let sample: CMSampleBuffer?
             if let units = video.hevcUnits { sample = try factory.hevcAccessUnit(units, presentationSeconds: pts) }
             else { sample = try factory.h264AccessUnit(video.annexB, presentationSeconds: pts) }
             if let sample {
+                if let startupPTS, pts < startupPTS,
+                   let attachments = CMSampleBufferGetSampleAttachmentsArray(sample, createIfNecessary: true) {
+                    let dictionary = unsafeBitCast(CFArrayGetValueAtIndex(attachments, 0), to: CFMutableDictionary.self)
+                    CFDictionarySetValue(dictionary, Unmanaged.passUnretained(kCMSampleAttachmentKey_DoNotDisplay).toOpaque(), Unmanaged.passUnretained(kCFBooleanTrue).toOpaque())
+                }
                 do { try output.enqueueVideo(sample) }
                 catch { loseVideoContinuity(); throw error }
             }
@@ -252,7 +268,7 @@ extension HighPerformancePlayback: HighPerformanceMediaOutput {}
         while let audio = pendingAudio.first {
             guard let pts = clock.presentationSeconds(ssrc: audio.ssrc, timestamp: audio.timestamp) else { break }
             // A late audio SR must not replay obsolete preroll after video has advanced.
-            if isPlaying && pts + Double(audioFrames) / audioRate < output.presentationSeconds {
+            if pts + Double(audioFrames) / audioRate < (startupPTS ?? (isPlaying ? output.presentationSeconds : -.infinity)) {
                 pendingAudio.removeFirst()
                 continue
             }

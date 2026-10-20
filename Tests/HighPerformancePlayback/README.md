@@ -72,3 +72,11 @@ ambiguous or incomplete evidence is rejected. Selection remains fixed for the
 SSRC across frames. The observed 88-byte no-DON AP had parameter lengths23/50/7
 at offsets2/27/79, so unconditional Apple DON stripping corrupted this server.
 Tests cover both layouts and subsequent single-NAL parsing without mode changes.
+
+Startup retains a coherent IDR dependency chain for up to120 frames/12MiB while
+waiting for the first Sender Report; steady-state buffering remains2 frames.
+The clock starts at the newest buffered PTS, with older reference samples marked
+DoNotDisplay and obsolete audio removed, so the wait is not added as permanent
+latency. A generated120-frame64×64 HEVC chain (x265 bframes=0,keyint=240,aud=1)
+is covered by an actual simulator delayed-SR display test. This small fixture
+establishes queue/dependency behavior, not6K decode throughput or memory capacity.
