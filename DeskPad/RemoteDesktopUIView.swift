@@ -26,6 +26,28 @@ private class SimpleTextRange: UITextRange {
     }
 }
 
+enum RemoteScrollSensitivity: String, CaseIterable {
+    case half, normal, double, triple
+
+    var multiplier: CGFloat {
+        switch self {
+        case .half: 0.5
+        case .normal: 1
+        case .double: 2
+        case .triple: 3
+        }
+    }
+
+    var title: String {
+        switch self {
+        case .half: "0.5배"
+        case .normal: "1배 (기존 속도)"
+        case .double: "2배 (기본)"
+        case .triple: "3배"
+        }
+    }
+}
+
 final class RemoteDesktopUIView: UIView {
 
     #if DEBUG
@@ -42,7 +64,13 @@ final class RemoteDesktopUIView: UIView {
     private var pressedKeys: [UIKeyboardHIDUsage: UInt32] = [:]
     private var pointerMask: UInt8 = 0
     private var pointerPoint: CGPoint = .zero
-    private var scrollRemainder: CGFloat = 0
+    var scrollSensitivity: RemoteScrollSensitivity = .double {
+        didSet {
+            if scrollSensitivity != oldValue { scrollRemainders.removeAll() }
+        }
+    }
+    // Direct touch and trackpad events must not consume each other's fractions.
+    private var scrollRemainders: [ObjectIdentifier: CGFloat] = [:]
 
     /// The native pointer is preferred; an exact bitmap is used only when UIKit
     /// cannot represent a server cursor's hotspot. Never draw both at once.
@@ -312,6 +340,7 @@ final class RemoteDesktopUIView: UIView {
 
         // Two-finger touch scroll (direct touch only)
         let touchScroll = UIPanGestureRecognizer(target: self, action: #selector(handleScroll))
+        touchScroll.allowedTouchTypes = [NSNumber(value: UITouch.TouchType.direct.rawValue)]
         touchScroll.minimumNumberOfTouches = 2
         touchScroll.maximumNumberOfTouches = 2
         addGestureRecognizer(touchScroll)
@@ -420,19 +449,34 @@ final class RemoteDesktopUIView: UIView {
     }
 
     @objc private func handleScroll(_ recognizer: UIPanGestureRecognizer) {
-        let translation = recognizer.translation(in: self)
-        guard recognizer.state == .began || recognizer.state == .changed else { return }
+        let identifier = ObjectIdentifier(recognizer)
+        guard recognizer.state == .began || recognizer.state == .changed else {
+            scrollRemainders.removeValue(forKey: identifier)
+            recognizer.setTranslation(.zero, in: self)
+            return
+        }
+        if recognizer.state == .began { scrollRemainders.removeValue(forKey: identifier) }
+        let delta = recognizer.translation(in: self).y
+        recognizer.setTranslation(.zero, in: self)
+        guard delta.isFinite else {
+            scrollRemainders.removeValue(forKey: identifier)
+            return
+        }
         pointerPoint = viewPointToDesktopPoint(recognizer.location(in: self))
         hasPointerPosition = true
         updatePointerMarker()
-        scrollRemainder += translation.y
-        while abs(scrollRemainder) >= 20 {
-            let mask: UInt8 = scrollRemainder > 0 ? 8 : 16
+        // Bound each callback to 32 wheel ticks so malformed or huge deltas
+        // cannot stall the UI or flood the remote input queue.
+        let pointsPerTick = 20 / scrollSensitivity.multiplier
+        let boundedDelta = max(-32 * pointsPerTick, min(delta, 32 * pointsPerTick))
+        let accumulated = (scrollRemainders[identifier] ?? 0) + boundedDelta
+        let ticks = Int(accumulated / pointsPerTick)
+        scrollRemainders[identifier] = accumulated - CGFloat(ticks) * pointsPerTick
+        let mask: UInt8 = ticks > 0 ? 8 : 16
+        for _ in 0..<abs(ticks) {
             onPointer?(pointerPoint, pointerMask | mask)
             onPointer?(pointerPoint, pointerMask)
-            scrollRemainder += scrollRemainder > 0 ? -20 : 20
         }
-        recognizer.setTranslation(.zero, in: self)
     }
 
     @objc private func handleDrag(_ recognizer: UIPanGestureRecognizer) {
