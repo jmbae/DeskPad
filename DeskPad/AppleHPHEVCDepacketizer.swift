@@ -1,4 +1,7 @@
 import Foundation
+#if DEBUG
+import os
+#endif
 
 /// Bounded single-SSRC HEVC receiver. Apple places DONL after every single-NAL
 /// header and every FU header, and once in AP (without per-unit DOND).
@@ -16,6 +19,9 @@ struct AppleHPHEVCDepacketizer {
     private var packets = 0
     private var damaged = false
     private var completed = false
+    #if DEBUG
+    private var diagnosticAPCount = 0
+    #endif
 
     mutating func append(sequence: UInt16, timestamp incoming: UInt32, marker: Bool, payload: Data) throws -> [Data]? {
         if timestamp != incoming {
@@ -37,6 +43,27 @@ struct AppleHPHEVCDepacketizer {
                 guard fragmentHeader == nil, b.count > 2 + donBytes else { throw Failure.malformed }
                 try add(Data(b.prefix(2)) + Data(b.dropFirst(2 + donBytes)))
             case 48:
+                #if DEBUG
+                diagnosticAPCount += 1
+                if diagnosticAPCount <= 3 {
+                    // Structural metadata only: positions, declared sizes, NAL types.
+                    // Compare negotiated Apple DON placement with no-DON framing.
+                    for start in [2, 4] {
+                        var cursor = start
+                        var shape: [String] = []
+                        for _ in 0..<8 {
+                            guard cursor + 2 <= b.count else { break }
+                            let size = Int(b[cursor]) << 8 | Int(b[cursor+1])
+                            let type = cursor + 2 < b.count ? Int((b[cursor+2] >> 1) & 63) : -1
+                            shape.append("\(cursor):\(size):\(type)")
+                            guard size >= 2, size <= b.count - cursor - 2 else { break }
+                            cursor += size + 2
+                        }
+                        let description = shape.joined(separator: ",")
+                        VNCControlDiagnostics.logger.notice("HP HEVC AP structure bytes=\(b.count) offset=\(start) entries_pos_size_type=\(description, privacy: .public) end=\(cursor)")
+                    }
+                }
+                #endif
                 guard fragmentHeader == nil else { throw Failure.malformed }
                 var p = 2 + donBytes
                 var count = 0
