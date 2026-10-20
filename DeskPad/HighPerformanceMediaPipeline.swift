@@ -23,7 +23,8 @@ extension HighPerformancePlayback: HighPerformanceMediaOutput {}
     private struct PendingAudio { let ssrc: UInt32; let timestamp: UInt32; let data: Data }
     private let output: any HighPerformanceMediaOutput
     private let audioFactory = HighPerformanceSampleFactory()
-        private let videoRate: Double
+        private let videoPayloadType: UInt8
+    private let videoRate: Double
     private let audioRate: Double
     private let audioFrames: UInt32
     private let aggregation: AppleHPVideoDepacketizer.AggregationFormat
@@ -39,13 +40,13 @@ extension HighPerformancePlayback: HighPerformanceMediaOutput {}
     var pendingAudioCount: Int { pendingAudio.count }
     var pendingVideoCount: Int { pendingVideo.count }
 
-    init(output: any HighPerformanceMediaOutput, videoClockRate: Double = 90000,
+    init(output: any HighPerformanceMediaOutput, videoPayloadType: UInt8 = 100, videoClockRate: Double = 90000,
          audioClockRate: Double = 48000, audioFramesPerPacket: UInt32 = 480,
          audioSpecificConfig: Data = Data([0xf8, 0xe6, 0x51, 0x32, 0xe0, 0]),
          aggregationFormat: AppleHPVideoDepacketizer.AggregationFormat = .rfc6184) throws {
         // This experimental profile is explicitly AAC-ELD at 48 kHz / 480-frame AUs.
-        guard videoClockRate == 90000, audioClockRate == 48000, audioFramesPerPacket == 480 else { throw Failure.invalidConfiguration }
-        self.output = output; videoRate = videoClockRate; audioRate = audioClockRate
+        guard videoPayloadType <= 127, videoPayloadType != 101, videoClockRate == 90000, audioClockRate == 48000, audioFramesPerPacket == 480 else { throw Failure.invalidConfiguration }
+        self.output = output; self.videoPayloadType = videoPayloadType; videoRate = videoClockRate; audioRate = audioClockRate
         audioFrames = audioFramesPerPacket; aggregation = aggregationFormat
         try audioFactory.configureAAC(audioSpecificConfig: audioSpecificConfig)
         guard let format = audioFactory.audioStreamDescription, format.mSampleRate == audioRate,
@@ -67,7 +68,7 @@ extension HighPerformancePlayback: HighPerformanceMediaOutput {}
     /// The caller must reorder a bounded packet window before feeding fragmented video.
     /// This does not composite Apple's multi-SSRC tiled HEVC mode.
     func consumeVideo(_ packet: HighPerformanceRTPPacket) throws {
-        guard packet.payloadType == 100, packet.ssrc != selectedAudio else { throw Failure.unsupportedStream }
+        guard packet.payloadType == videoPayloadType, packet.ssrc != selectedAudio else { throw Failure.unsupportedStream }
         if videos[packet.ssrc] == nil {
             guard videos.count < 4 else { throw Failure.tooManyStreams }
             var state = VideoState(); state.depacketizer.aggregationFormat = aggregation

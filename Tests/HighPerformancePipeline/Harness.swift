@@ -32,6 +32,11 @@ import CoreMedia
     for ssrc in UInt32(3)...5 { try pipeline.consumeVideo(packet(Data([0x09,0x10]),seq:1,ssrc:ssrc,ts:0,pt:100)) }
     do { try pipeline.consumeVideo(packet(Data([0x09,0x10]),seq:1,ssrc:6,ts:0,pt:100)); fatalError("unbounded video SSRCs") } catch {}
     do { try pipeline.consumeAudioAccessUnit(packet(Data([1]),seq:1,ssrc:1,ts:0,pt:101)); fatalError("shared audio/video SSRC") } catch {}
+    let alternate=try HighPerformanceMediaPipeline(output:Sink(),videoPayloadType:123)
+    try alternate.consumeVideo(packet(Data([0x09,0x10]),seq:1,ssrc:77,ts:0,pt:123))
+    do { try alternate.consumeVideo(packet(Data([0x09,0x10]),seq:2,ssrc:77,ts:1,pt:100)); fatalError("unnegotiated video PT accepted") } catch {}
+    do { _=try HighPerformanceMediaPipeline(output:Sink(),videoPayloadType:128); fatalError("invalid7bit payload type accepted") } catch {}
+    do { _=try HighPerformanceMediaPipeline(output:Sink(),videoPayloadType:101); fatalError("ambiguous audio/video PT accepted") } catch {}
     pipeline.reset();precondition(!pipeline.isPlaying && pipeline.pendingAudioCount==0 && pipeline.pendingVideoCount==0)
     print("Pipeline: waits for independent SRs, bounded preroll, commonPTS startup and reset passed")
  }
