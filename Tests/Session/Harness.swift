@@ -46,9 +46,7 @@ import Foundation
             try await waitUntil("hidden cursor and frame") { model.state == .connected }
             precondition(model.remoteCursor?.isHidden == true)
             let revision = model.framebufferRevision
-            // The server removes the first marker before awaiting the next.
-            try await Task.sleep(for: .milliseconds(100))
-            try signalServer()
+            try Data().write(to: marker.appendingPathExtension("frame"))
             try await waitUntil("cursor-only update after frame") { model.remoteCursor?.width == 1 }
             precondition(model.framebufferRevision == revision)
             precondition(model.framebuffer == Data([255,0,0,255]))
