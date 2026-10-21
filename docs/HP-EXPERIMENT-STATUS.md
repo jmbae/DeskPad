@@ -101,3 +101,35 @@ The user subsequently reported missing video. The observed simulator desktop was
 still visible with the test player at its black final frame (0:20/0:20); whether
 the report refers to missing flashes or a frozen whole desktop needs clarification.
 Frequent keyframe recovery remains a separate observed release blocker.
+
+
+## 2026-10-21 follow-up acceptance
+
+Hardware Shift press/end/cancel now reaches UIKit as well as the remote shortcut
+path. Two routing regressions failed before and pass after the fix; 28 existing
+input and nine IME cases pass. The session toolbar displays the active local iPad
+input language, explicitly distinguished from the remote Mac input source.
+Physical Globe/Shift acceptance remains pending: automation key events failed to
+reach even the native reference UITextView. The separate Input QA simulator is
+left open for a manual comparison; synthetic press tests are not hardware proof.
+
+Successive video gaps now keep independent first-seen deadlines and NACK budgets,
+and an expected repair packet is accepted before checking a full reorder queue.
+Authenticated RTP reception now supplies real RTCP loss/jitter/LSR/DLSR reports,
+with periodic sender reports. Regression vectors and the combined simulator build
+pass. These changes have not eliminated live loss: a fresh actual-host connection
+at 12:35 presented its first frame after approximately 12 seconds, then continued
+to expire gaps without receiving repairs. UDP send failures, peer-filter drops,
+and SRTP rejections were not observed. No main merge or TestFlight release.
+
+Audio diagnostics now separately count late/preroll drops and renderer
+backpressure, plus incoming sequence holes and timestamp discontinuities. In the
+12:35 connection, 1178 preroll AUs were discarded during startup; after playback
+started, late drops and backpressure remained zero during observation. A new
+120-second synchronized flash/beep fixture awaits remote playback. Earlier user
+feedback established intermittent audible output, not sustained acceptance.
+
+The route to the remote host uses a 1280-byte tunnel MTU while observed media
+packets can exceed it. Fragmentation loss is only a hypothesis: packet-header
+capture is unavailable without BPF permission. No speculative MTU negotiation
+field or physical-display configuration was added.
