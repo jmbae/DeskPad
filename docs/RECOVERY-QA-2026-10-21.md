@@ -6,6 +6,7 @@
 - Established sessions recover after transient network errors, all-media idle timeout, or active video with no clean native decode progress. Authentication, trust, invalid protocol and unsupported media errors remain terminal.
 - Active video requires advancing RTP timestamps and a previously successful native decode; static/idle desktops do not trigger the eight-second progress guard.
 - Inactive/background sessions mute audio and release keyboard state. Background execution has a maximum 20-second grace and may expire earlier at iPadOS discretion. Short foreground return retains a healthy session; expiration retires transport and foreground automatically reconnects.
+- Foreground return also checks video flush-required / failed and audio failed states. Suspended-renderer failure in the background defers recovery until foreground, using the same bounded retry budget.
 - No indefinite background entitlement, silent-audio keepalive, Mac helper or OS network changes.
 
 ## Actual native Mac + iPad simulator evidence
@@ -26,6 +27,7 @@ Evidence log: `/tmp/deskpad-recovery-realhost.log`. Build: `/tmp/deskpad-recover
 - `Tests/SessionRecovery/run.sh`: PASS (retry budget, startup/auth exclusions, deferred background failure, pause/short-return, cancellation/stale generation).
 - `Tests/HighPerformanceVideoProgress/Harness.swift`: PASS (active stall, clean progress, static idle, reset, bounded one-shot injection).
 - Signed simulator Debug build: PASS.
+- Final renderer-resume hardening f1d795d: all 51 simulator tests and recovery policy harness passed again (`/tmp/deskpad-recovery-final-tests.log`). Final live reconnection at 19:19 was blocked by remote port 5900 timing out independently with `nc`; the app surfaced a connection timeout. The earlier real-host loss/lifecycle results are for b4a78ef, before this narrow renderer-state hardening.
 
 ## Limits
 
