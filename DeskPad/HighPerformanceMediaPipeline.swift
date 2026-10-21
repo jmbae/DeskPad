@@ -186,6 +186,20 @@ extension HighPerformanceMediaOutput {
         catch { videos[packet.ssrc] = state; if !ltrEnabled { loseVideoContinuity() }; throw error }
         videos[packet.ssrc] = state
         guard let units else { return }
+        if ltrEnabled, state.hevcDepacketizer.detectedPacketization == .rfc7798NoDON {
+            // Some servers accept the offer's LTR flag but send ordinary RFC RTP.
+            // Without a wire DON there is no frame identity we can safely ACK.
+            // Re-enter the normal keyframe gate rather than failing the session
+            // or treating unverified P pictures as reference-safe.
+            ltrEnabled = false
+            referenceGuard.reset()
+            pendingVideo.removeAll()
+            needsKeyframe = true
+            if isPlaying { output.reset(); isPlaying = false }
+            #if DEBUG
+            VNCControlDiagnostics.logger.notice("HP LTR downgraded: authenticated parameter AP has no DON")
+            #endif
+        }
         #if DEBUG
         diagnosticVideoAUs += 1
         if diagnosticVideoAUs <= 20 || diagnosticVideoAUs % 120 == 0 {
@@ -311,7 +325,7 @@ extension HighPerformanceMediaOutput {
                         guard let don = video.don else { throw Failure.unsupportedStream }
                         let prepared = PreparedPicture()
                         try output.enqueueVideo(sample, prepare: { [weak self] in
-                            guard let self else { return false }
+                            guard let self, self.ltrEnabled else { return false }
                             do { prepared.picture = try self.referenceGuard.prepare(units); return true }
                             catch {
                                 #if DEBUG
@@ -323,7 +337,7 @@ extension HighPerformanceMediaOutput {
                                 self.onNeedsKeyframe?(); return false
                             }
                         }, decodeCompletion: { [weak self] successful in
-                            guard let self, let picture = prepared.picture else { return }
+                            guard let self, self.ltrEnabled, let picture = prepared.picture else { return }
                             if successful, self.referenceGuard.decoded(picture) {
                                 #if DEBUG
                                 self.diagnosticLTRDecoded += 1

@@ -118,6 +118,18 @@ import CoreMedia
     precondition(successfulDecode.0())
     successfulDecode.1(true)
     precondition(acknowledgements == [9], "ACK must preserve exact AU DON only after validated decode")
+    let fallbackSink = HEVCSink()
+    let fallback = try HighPerformanceMediaPipeline(output: fallbackSink, videoPayloadType: 100, videoCodec: .hevc)
+    try fallback.configureLTR(enabled: true)
+    var fallbackACKs = 0
+    fallback.onCleanHEVCFrame = { _ in fallbackACKs += 1 }
+    try fallback.consumeVideo(packet(55, payload: paramsRFC))
+    // The now-untrusted P picture must not open the ordinary startup gate.
+    try fallback.consumeVideo(packet(55, seq: 1, payload: Data([2,1,0x80])))
+    try fallback.observe([HighPerformanceSenderReport(ssrc: 55, ntpSeconds: 100, ntpFraction: 0, rtpTimestamp: 0)], clockRate: 90000)
+    precondition(!fallback.isPlaying && fallbackSink.video == 0 && fallbackSink.decodes.isEmpty)
+    try fallback.consumeVideo(packet(55, seq: 2, payload: nal))
+    precondition(fallback.isPlaying && fallbackSink.video == 1 && fallbackSink.decodes.isEmpty && fallbackACKs == 0, "accepted LTR without DON must use normal display and never ACK")
     print("HEVC single/AP/FU, wrap/loss/malformed/DON, native format and single-SSRC pipeline passed")
  }
 }
