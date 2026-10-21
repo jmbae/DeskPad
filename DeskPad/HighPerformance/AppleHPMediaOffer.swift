@@ -4,7 +4,7 @@ import zlib
 
 /// Wire offer for the experimental single-picture H.264 or HEVC / AAC-ELD profiles.
 /// No connection, display change, or media playback occurs in this builder.
-struct AppleHPMediaOffer {
+nonisolated struct AppleHPMediaOffer {
     enum VideoProfile: Sendable, CaseIterable {
         case h264SinglePicture, hevcSinglePicture
         var payloadType: UInt8 { self == .h264SinglePicture ? 123 : 100 }

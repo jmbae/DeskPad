@@ -1,11 +1,11 @@
 import Foundation
 
-enum HighPerformanceMediaError: Error {
+nonisolated enum HighPerformanceMediaError: Error {
     case malformedPacket, invalidClock, staleSenderReport, tooManyStreams
 }
 
 /// Parses authenticated, decrypted RTP only. SRTP authentication/replay checks must precede this.
-struct HighPerformanceRTPPacket {
+nonisolated struct HighPerformanceRTPPacket {
     let marker: Bool
     let payloadType: UInt8
     let sequenceNumber: UInt16
@@ -39,7 +39,7 @@ struct HighPerformanceRTPPacket {
     }
 }
 
-struct HighPerformanceSenderReport {
+nonisolated struct HighPerformanceSenderReport {
     let ssrc: UInt32
     let ntpSeconds: UInt32
     let ntpFraction: UInt32
@@ -112,7 +112,7 @@ struct HighPerformanceMediaClock {
     }
 }
 
-private func mediaU16(_ b: [UInt8], _ i: Int) -> UInt16 { UInt16(b[i]) << 8 | UInt16(b[i + 1]) }
-private func mediaU32(_ b: [UInt8], _ i: Int) -> UInt32 {
+nonisolated private func mediaU16(_ b: [UInt8], _ i: Int) -> UInt16 { UInt16(b[i]) << 8 | UInt16(b[i + 1]) }
+nonisolated private func mediaU32(_ b: [UInt8], _ i: Int) -> UInt32 {
     UInt32(b[i]) << 24 | UInt32(b[i + 1]) << 16 | UInt32(b[i + 2]) << 8 | UInt32(b[i + 3])
 }

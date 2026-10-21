@@ -1,7 +1,7 @@
 # Native HP pointer envelope
 
 ```sh
-swiftc -swift-version 6 DeskPad/AppleHPRecordCipher.swift Tests/HighPerformancePointer/Harness.swift -o /tmp/deskpad-hp-pointer-test
+swiftc -swift-version 6 DeskPad/HighPerformance/AppleHPRecordCipher.swift Tests/HighPerformancePointer/Harness.swift -o /tmp/deskpad-hp-pointer-test
 /tmp/deskpad-hp-pointer-test
 ```
 

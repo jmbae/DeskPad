@@ -4,7 +4,7 @@ import base64, pathlib, plistlib, struct, subprocess, tempfile, zlib
 root = pathlib.Path(__file__).resolve().parents[2]
 with tempfile.TemporaryDirectory(prefix='deskpad-offer-') as tmp:
     binary = str(pathlib.Path(tmp) / 'offer')
-    subprocess.run(['swiftc', '-parse-as-library', '-warnings-as-errors', str(root/'DeskPad/AppleHPMediaOffer.swift'), str(root/'Tests/HighPerformance/MediaOfferHarness.swift'), '-o', binary], check=True)
+    subprocess.run(['swiftc', '-parse-as-library', '-warnings-as-errors', str(root/'DeskPad/HighPerformance/AppleHPMediaOffer.swift'), str(root/'Tests/HighPerformance/MediaOfferHarness.swift'), '-o', binary], check=True)
     lines = subprocess.check_output([binary], text=True).splitlines()
 
 def decode(data):
