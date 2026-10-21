@@ -382,7 +382,14 @@ final class VNCSessionModel {
             switch network { case .posix, .dns: recoverable = true; default: recoverable = false }
         } else if case RFBClient.ClientError.connection = error { recoverable = true }
         else if let media = error as? AppleHPFailure {
-            switch media { case .mediaIdleTimeout, .videoStalled: recoverable = true; default: recoverable = false }
+            switch media {
+            case .mediaIdleTimeout, .videoStalled: recoverable = true
+            case .playbackFailure:
+                // A suspended native renderer may fail before foreground checks run.
+                // Malformed media with healthy renderers remains terminal.
+                recoverable = !recovery.foreground && highPerformancePlayback?.needsRecovery == true
+            default: recoverable = false
+            }
         } else { recoverable = false }
         switch recovery.failure(recoverable: recoverable, generation: recovery.generation, cancelled: error is CancellationError) {
         case .retry(let attempt, let delay): scheduleResume(delay: delay, attempt: attempt); return
