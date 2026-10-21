@@ -48,10 +48,11 @@ for profile, expected_type, variants, selector in [(0, 123, 4, 1), (1, 100, 2, 1
         desc = decode(blob[5 if video else 3][0])
         assert desc[1] == [ssrc]
         if video:
+            assert desc[2] == [1], "video RTCP feedback must be negotiated for NACK recovery"
             assert desc[6] == [1] and desc[7] == [0]
             assert len(desc[3]) == 1
             codec = decode(desc[3][0])
             assert codec[1] == [expected_type] and len(codec[2]) == variants and codec[4] == [selector] and b'LTR;' not in codec[3][0]
         else:
-            assert desc[4] == [24191]
+            assert desc[2] == [0] and desc[4] == [24191]
 print('PASS: independent H264/HEVC single-picture offers, fresh keys, BE flags, no LTR, unchanged audio')
