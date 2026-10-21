@@ -14,6 +14,7 @@ actor AppleHPDatagramTransport {
     private let onFailure: (AppleHPFailure) async -> Void
     private var lastAuthenticatedPacket = ProcessInfo.processInfo.systemUptime
     private var didStart = false
+    private var videoProgress = AppleHPVideoProgressWatchdog()
     private var negotiated = false
     private let requestedLTR: Bool
     private var acceptedLTR = false
@@ -91,13 +92,19 @@ actor AppleHPDatagramTransport {
         }
         heartbeatTask = Task {
             while !Task.isCancelled {
-                pulse()
+                await pulse()
                 try? await Task.sleep(for: .milliseconds(100))
             }
         }
     }
-    private func pulse() {
+    private func pulse() async {
         guard active, sockets.count == 2 else { return }
+        let cleanDecode = await pipeline.lastCleanVideoDecodeTime
+        guard active, sockets.count == 2 else { return }
+        if videoProgress.stalled(now: ProcessInfo.processInfo.systemUptime, lastCleanDecode: cleanDecode) {
+            failMedia(.videoStalled)
+            return
+        }
         if negotiated, !didStart { requestKeyframe() }
         if negotiated, ProcessInfo.processInfo.systemUptime - lastAuthenticatedPacket > 15 {
             failMedia(.mediaIdleTimeout)
@@ -309,6 +316,9 @@ actor AppleHPDatagramTransport {
     }
     private func consume(_ data: Data, stream: Int) async {
         guard active, negotiated, data.count >= 2 else { return }
+        #if DEBUG
+        if AppleHPDebugMediaLoss.shared.shouldDrop(now: ProcessInfo.processInfo.systemUptime) { return }
+        #endif
         do {
             let isControl = (192...223).contains(data[data.startIndex + 1])
             if isControl {
@@ -346,6 +356,7 @@ actor AppleHPDatagramTransport {
                     audioReceptionReport.observe(packet, now: ProcessInfo.processInfo.systemUptime)
                     await deliverAudio(audioReorder.insert(packet, now: ProcessInfo.processInfo.systemUptime))
                 } else {
+                    videoProgress.observeVideo(timestamp: packet.timestamp, now: ProcessInfo.processInfo.systemUptime)
                     receptionReport.observe(packet, now: ProcessInfo.processInfo.systemUptime)
                     await deliverVideo(videoReorder.insert(packet, now: ProcessInfo.processInfo.systemUptime))
                 }

@@ -63,6 +63,7 @@ extension HighPerformanceMediaOutput {
     }
     private var needsKeyframe = true
     private(set) var isPlaying = false
+    private(set) var lastCleanVideoDecodeTime: Double?
     #if DEBUG
     private var diagnosticVideoPackets = 0
     private var diagnosticVideoAUs = 0
@@ -259,6 +260,7 @@ extension HighPerformanceMediaOutput {
     /// Fresh session only; the SRTP receiver must also be replaced with freshly negotiated keys.
     func reset() {
         referenceGuard.reset()
+        lastCleanVideoDecodeTime = nil
         output.reset(); clock.reset(); videos.removeAll(); pendingVideo.removeAll(); pendingAudio.removeAll()
         selectedVideo = nil; selectedAudio = nil; needsKeyframe = true; isPlaying = false
         audioLateDrops = 0; audioPrerollDrops = 0; audioBackpressureEvents = 0; receivedAudioPackets = 0
@@ -332,6 +334,7 @@ extension HighPerformanceMediaOutput {
                         }, decodeCompletion: { [weak self] successful in
                             guard let self, self.ltrEnabled, let picture = prepared.picture else { return }
                             if successful, self.referenceGuard.decoded(picture) {
+                                self.lastCleanVideoDecodeTime = ProcessInfo.processInfo.systemUptime
                                 #if DEBUG
                                 self.diagnosticLTRDecoded += 1
                                 if self.diagnosticLTRDecoded <= 10 || self.diagnosticLTRDecoded % 120 == 0 {
