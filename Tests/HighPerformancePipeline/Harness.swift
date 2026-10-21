@@ -58,8 +58,11 @@ import CoreMedia
     } catch HighPerformancePlaybackError.backpressure {}
     precondition(pipeline.audioBackpressureEvents == 1 && pipeline.pendingAudioCount == 1)
     sink.rejectAudio = false
-    try pipeline.observe([], clockRate: 48000)
+    // A fresh SR may move the mapping while renderer backpressure retains an
+    // AU. Its already prepared sample must keep the same identity/PTS on retry.
+    try pipeline.observe([HighPerformanceSenderReport(ssrc:2,ntpSeconds:101,ntpFraction:0,rtpTimestamp:4800)], clockRate:48000)
     precondition(pipeline.pendingAudioCount == 0 && sink.audio.count == playedAudio + 1, "backpressure must retain rather than drop audio")
+    precondition(abs(sink.audio.last! - 0.21) < 0.000001, "backpressure retry remapped an already prepared AU")
     let offsetSink = Sink()
     let offsetPipeline = try HighPerformanceMediaPipeline(output: offsetSink)
     for (n,nal) in units.enumerated() { try offsetPipeline.consumeVideo(packet(nal,seq:UInt16(n),ssrc:10,ts:90000,pt:100,marker:n==units.count-1)) }

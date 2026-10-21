@@ -177,8 +177,10 @@ final class HighPerformanceSampleFactory {
     private let audioRenderer = AVSampleBufferAudioRenderer()
     private let synchronizer = AVSampleBufferRenderSynchronizer()
     private var nativeVideoDecoder: HighPerformanceNativeVideoDecoder?
+    private let pcmAudio = HighPerformancePCMAudioDelivery()
 
     #if DEBUG
+    private var diagnosticAudioEnqueues = 0
     private var diagnosticPresentationPolls = 0
     private var audioDiagnostic = HighPerformanceAudioDiagnostic()
     #endif
@@ -242,20 +244,25 @@ final class HighPerformanceSampleFactory {
 
     func enqueueAudio(_ sample: CMSampleBuffer) throws {
         guard audioRenderer.status != .failed else { throw HighPerformancePlaybackError.rendererFailed }
-        guard audioRenderer.isReadyForMoreMediaData else { throw HighPerformancePlaybackError.backpressure }
-        audioRenderer.enqueue(sample)
+        try pcmAudio.enqueue(sample, isReady: { audioRenderer.isReadyForMoreMediaData }, emit: { audioRenderer.enqueue($0) })
         #if DEBUG
         audioDiagnostic.inspect(sample, clock: presentationSeconds)
+        diagnosticAudioEnqueues += 1
+        if diagnosticAudioEnqueues <= 2 || diagnosticAudioEnqueues % 500 == 0 {
+            VNCControlDiagnostics.logger.notice("HP PCM playback enqueued=\(self.diagnosticAudioEnqueues) decoded_frames=\(self.pcmAudio.decodedFrames) concealed_frames=\(self.pcmAudio.concealedFrames) long_gaps=\(self.pcmAudio.longGaps)")
+        }
         #endif
     }
 
     func reset() {
         nativeVideoDecoder?.reset()
+        pcmAudio.reset()
         synchronizer.setRate(0, time: .zero)
         videoLayer.sampleBufferRenderer.flush(removingDisplayedImage: true)
         audioRenderer.flush()
         #if DEBUG
         audioDiagnostic = HighPerformanceAudioDiagnostic()
+        diagnosticAudioEnqueues = 0
         #endif
     }
 }

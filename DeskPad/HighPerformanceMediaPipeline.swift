@@ -33,7 +33,7 @@ extension HighPerformanceMediaOutput {
         let factory = HighPerformanceSampleFactory()
     }
     private struct PendingVideo { let ssrc: UInt32; let timestamp: UInt32; let annexB: Data; let keyframe: Bool; var hevcUnits: [Data]? = nil; var don: UInt16? = nil }
-    private struct PendingAudio { let ssrc: UInt32; let timestamp: UInt32; let data: Data }
+    private struct PendingAudio { let ssrc: UInt32; let timestamp: UInt32; let data: Data; var prepared: CMSampleBuffer? = nil }
     private let output: any HighPerformanceMediaOutput
     private let audioFactory = HighPerformanceSampleFactory()
     private let videoCodec: VideoCodec
@@ -349,14 +349,15 @@ extension HighPerformanceMediaOutput {
             pendingVideo.removeFirst()
         }
         while let audio = pendingAudio.first {
-            guard let pts = clock.presentationSeconds(ssrc: audio.ssrc, timestamp: audio.timestamp) else { break }
+            guard let pts = audio.prepared.map({ CMTimeGetSeconds(CMSampleBufferGetPresentationTimeStamp($0)) }) ?? clock.presentationSeconds(ssrc: audio.ssrc, timestamp: audio.timestamp) else { break }
             // A late audio SR must not replay obsolete preroll after video has advanced.
             if pts + Double(audioFrames) / audioRate < (startupPTS ?? (isPlaying ? output.presentationSeconds : -.infinity)) {
                 audioLateDrops += 1
                 pendingAudio.removeFirst()
                 continue
             }
-            let sample = try audioFactory.aacAccessUnit(audio.data, presentationSeconds: pts)
+            let sample = try audio.prepared ?? audioFactory.aacAccessUnit(audio.data, presentationSeconds: pts)
+            pendingAudio[0].prepared = sample
             do { try output.enqueueAudio(sample) }
             catch HighPerformancePlaybackError.backpressure {
                 // Count retries, not lost AUs: this AU remains queued for the next drain.
