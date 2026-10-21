@@ -13,18 +13,20 @@ struct AppleHPMediaOffer {
         let viewerToServer: Data
         let serverToViewer: Data
     }
-    enum Failure: Error { case randomFailed, compressionFailed, oversizedOffer }
+    enum Failure: Error { case randomFailed, compressionFailed, oversizedOffer, unsupportedLTR }
+    let ltrEnabled: Bool
     let message: Data
     let videoKeys: StreamKeys
     let audioKeys: StreamKeys
     let videoSSRC: UInt32
     let audioSSRC: UInt32
 
-    static func make(videoProfile: VideoProfile = .h264SinglePicture) throws -> Self {
+    static func make(videoProfile: VideoProfile = .h264SinglePicture, enableLTR: Bool = false) throws -> Self {
+        guard !enableLTR || videoProfile == .hevcSinglePicture else { throw Failure.unsupportedLTR }
         let video = try makeKeys(), audio = try makeKeys()
         let videoSSRC = try randomSSRC(), audioSSRC = try randomSSRC()
-        let videoOffer = try plist(video: true, ssrc: videoSSRC, profile: videoProfile)
-        let audioOffer = try plist(video: false, ssrc: audioSSRC, profile: videoProfile)
+        let videoOffer = try plist(video: true, ssrc: videoSSRC, profile: videoProfile, enableLTR: enableLTR)
+        let audioOffer = try plist(video: false, ssrc: audioSSRC, profile: videoProfile, enableLTR: enableLTR)
         let bodySize = 216 + audioOffer.count + videoOffer.count
         guard bodySize <= Int(UInt16.max) else { throw Failure.oversizedOffer }
         var header = Data(repeating: 0, count: 36)
@@ -43,10 +45,10 @@ struct AppleHPMediaOffer {
         let message = header + audio.viewerToServer + audio.serverToViewer + audioOffer
             + video.viewerToServer + video.serverToViewer + videoOffer
         guard message.count == bodySize + 4 else { throw Failure.oversizedOffer }
-        return Self(message: message, videoKeys: video, audioKeys: audio, videoSSRC: videoSSRC, audioSSRC: audioSSRC)
+        return Self(ltrEnabled: enableLTR, message: message, videoKeys: video, audioKeys: audio, videoSSRC: videoSSRC, audioSSRC: audioSSRC)
     }
 
-    private static func plist(video: Bool, ssrc: UInt32, profile: VideoProfile) throws -> Data {
+    private static func plist(video: Bool, ssrc: UInt32, profile: VideoProfile, enableLTR: Bool) throws -> Data {
         var endpoint = Proto()
         endpoint.number(1, 0); endpoint.number(2, 1)
         endpoint.string(3, "DeskPad"); endpoint.string(4, "1.1")
@@ -55,14 +57,14 @@ struct AppleHPMediaOffer {
             "avcMediaStreamNegotiatorMode": video ? 7 : 8,
             "avcMediaStreamOptionRemoteEndpointInfo": endpoint.data,
             "avcMediaStreamOptionCallID": UUID().uuidString,
-            "avcMediaStreamNegotiatorMediaBlob": try compressed(mediaDescription(video: video, ssrc: ssrc, profile: profile))
+            "avcMediaStreamNegotiatorMediaBlob": try compressed(mediaDescription(video: video, ssrc: ssrc, profile: profile, enableLTR: enableLTR))
         ]
         let result = try PropertyListSerialization.data(fromPropertyList: dictionary, format: .binary, options: 0)
         guard result.count < 16_384 else { throw Failure.oversizedOffer }
         return result
     }
 
-    private static func mediaDescription(video: Bool, ssrc: UInt32, profile: VideoProfile) -> Data {
+    private static func mediaDescription(video: Bool, ssrc: UInt32, profile: VideoProfile, enableLTR: Bool) -> Data {
         var description = Proto()
         description.number(1, UInt64(ssrc))
         // VideoSettings field 2 enables RTCP feedback (including NACK). It is
@@ -88,7 +90,7 @@ struct AppleHPMediaOffer {
             codec.string(3, parameters)
             codec.number(4, profile == .h264SinglePicture ? 1 : 14)
             description.bytes(3, codec.data)
-            description.number(6, 1); description.number(7, 0)
+            description.number(6, 1); description.number(7, enableLTR ? 1 : 0)
             description.number(8, 63); description.number(9, 1); description.number(12, 1)
         } else {
             // AAC-ELD system-audio tier selector, not a target output bitrate.
