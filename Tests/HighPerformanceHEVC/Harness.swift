@@ -124,17 +124,32 @@ import CoreMedia
     var fallbackACKs = 0
     fallback.onCleanHEVCFrame = { _ in fallbackACKs += 1 }
     try fallback.consumeVideo(packet(55, payload: paramsRFC))
-    // A malformed/unproven P picture is rejected by the reference gate, not
-    // handed to native decode. No DON is ever fabricated for feedback.
+    // A pre-IDR P picture must not start the clock or enter native decode.
     try fallback.consumeVideo(packet(55, seq: 1, payload: Data([2,1,0x80])))
     try fallback.observe([HighPerformanceSenderReport(ssrc: 55, ntpSeconds: 100, ntpFraction: 0, rtpTimestamp: 0)], clockRate: 90000)
-    precondition(fallbackSink.video == 0 && fallbackSink.decodes.count == 1)
-    let invalid = fallbackSink.decodes.removeFirst()
-    precondition(!invalid.0()); invalid.1(false)
+    precondition(!fallback.isPlaying && fallbackSink.video == 0 && fallbackSink.decodes.isEmpty)
     try fallback.consumeVideo(packet(55, seq: 2, payload: nal))
     let cleanNoDON = fallbackSink.decodes.removeFirst()
     precondition(cleanNoDON.0()); cleanNoDON.1(true)
     precondition(fallbackSink.video == 0 && fallbackACKs == 0, "no-DON native validation must never ACK")
+    let damagedSink = HEVCSink()
+    let damagedStartup = try HighPerformanceMediaPipeline(output: damagedSink, videoPayloadType:100, videoCodec:.hevc)
+    try damagedStartup.configureLTR(enabled:true)
+    // Parameters belonged to an incomplete initial AU. A new timestamp discards
+    // them along with the lost IDR; subsequent P pictures must not throw or start.
+    var incompleteInitial = Data([0x80,100,0,0,0,0,0,0,0,0,0,66]); incompleteInitial.append(paramsRFC)
+    try damagedStartup.consumeVideo(HighPerformanceRTPPacket(incompleteInitial))
+    try damagedStartup.observe([HighPerformanceSenderReport(ssrc:66,ntpSeconds:1,ntpFraction:0,rtpTimestamp:0)],clockRate:90000)
+    for seq in UInt8(2)...27 { try damagedStartup.consumeVideo(packet(66,seq:seq,payload:Data([2,1,0x80]))) }
+    precondition(!damagedStartup.isPlaying && damagedStartup.pendingVideoCount == 0 && damagedSink.decodes.isEmpty)
+    // IDR without the missing configuration must likewise wait safely.
+    try damagedStartup.consumeVideo(packet(66,seq:28,payload:nal))
+    precondition(!damagedStartup.isPlaying && damagedStartup.pendingVideoCount == 0)
+    try damagedStartup.consumeVideo(packet(66,seq:29,payload:paramsRFC))
+    try damagedStartup.consumeVideo(packet(66,seq:30,payload:nal))
+    precondition(damagedStartup.isPlaying && damagedSink.decodes.count == 1)
+    let recoveredStart = damagedSink.decodes.removeFirst()
+    precondition(recoveredStart.0()); recoveredStart.1(true)
     let chainBytes = [UInt8](try Data(contentsOf: URL(fileURLWithPath: "Tests/HighPerformancePlayback/chain120.hevc")))
     var chainStarts: [(Int,Int)] = []; var chainIndex = 0
     while chainIndex + 3 < chainBytes.count {

@@ -211,7 +211,11 @@ extension HighPerformanceMediaOutput {
         // Accept BLA/IDR pictures; CRA needs RASL suppression and is deliberately
         // excluded until that decode-order path is implemented.
         let keyframe = picture.allSatisfy { (16...20).contains(Int(($0.first! >> 1) & 63)) }
-        if !ltrEnabled && needsKeyframe && !keyframe { return }
+        // Native reference validation can recover after loss only once a real
+        // baseline exists. A damaged initial AU may have lost its parameter sets
+        // too; do not start the clock or construct P samples from that debris.
+        guard state.factory.hasHEVCConfiguration else { onNeedsKeyframe?(); return }
+        if needsKeyframe && !keyframe { return }
         needsKeyframe = false
         if !canBufferVideo(bytes: units.reduce(0) { $0 + $1.count }) {
             loseVideoContinuity()
@@ -336,7 +340,7 @@ extension HighPerformanceMediaOutput {
                                 #endif
                                 if let don { self.onCleanHEVCFrame?(don) }
                             }
-                            else { self.referenceGuard.reset(); self.onNeedsKeyframe?() }
+                            else { self.referenceGuard.reset(); self.needsKeyframe = true; self.onNeedsKeyframe?() }
                         })
                     } else { try output.enqueueVideo(sample) }
                 }

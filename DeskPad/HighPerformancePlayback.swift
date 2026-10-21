@@ -15,6 +15,7 @@ enum HighPerformancePlaybackError: Error {
 final class HighPerformanceSampleFactory {
     private var hevcParameters: [Int: Data] = [:]
     private var hevcFormat: CMVideoFormatDescription?
+    var hasHEVCConfiguration: Bool { hevcFormat != nil }
     private var sps: Data?
     private var pps: Data?
     private var videoFormat: CMVideoFormatDescription?
