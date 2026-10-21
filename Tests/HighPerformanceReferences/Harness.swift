@@ -47,6 +47,10 @@ func frame(_ poc:Int, idr:Bool=false, delta:Int?=nil, long:Int?=nil) -> Data {
   precondition(recovered.references == Set([0]) && guarder.decoded(recovered))
   do { _=try guarder.prepare([frame(5,long:1)]);fatalError("retired DPB reference accepted") } catch AppleHPHEVCReferenceGuard.Failure.missingReference {}
   let next=try guarder.prepare([frame(5,delta:1)]);precondition(guarder.decoded(next))
+  var changed = pps(); changed.append(0)
+  do { _ = try guarder.prepare([changed,frame(6,delta:1)]); fatalError("PPS change retained old clean references") }
+  catch AppleHPHEVCReferenceGuard.Failure.missingReference {}
+  precondition(!guarder.decoded(next), "format change must invalidate pending decode callback")
   guarder.reset();precondition(!guarder.decoded(next))
   let fresh = try guarder.prepare([sps(),pps(),frame(0,idr:true)])
   precondition(!guarder.decoded(idr), "old decode callback cannot cross a reset")

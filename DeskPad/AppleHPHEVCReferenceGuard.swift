@@ -39,13 +39,14 @@ nonisolated struct AppleHPHEVCReferenceGuard {
             guard unit.count >= 3, unit.count <= 8 * 1024 * 1024 else { throw Failure.malformed }
             let type = (unit[unit.startIndex] >> 1) & 63
             switch type {
+            case 32:
+                guard unit.count <= 65536 else { throw Failure.malformed }
+                var bits = try Bits(unit)
+                rememberParameter(key: 128 + (try bits.read(4)), bytes: unit)
             case 33:
                 guard unit.count <= 65536 else { throw Failure.malformed }
                 let value = try Self.parseSPS(unit)
-                if let prior = parameterBytes[value.id], prior != unit {
-                    epoch += 1; clean.removeAll(); previousPOC = 0
-                }
-                parameterBytes[value.id] = unit
+                rememberParameter(key: value.id, bytes: unit)
                 sps[value.id] = value
             case 34:
                 guard unit.count <= 65536 else { throw Failure.malformed }
@@ -53,6 +54,7 @@ nonisolated struct AppleHPHEVCReferenceGuard {
                 let id = try bits.ue(63), spsID = try bits.ue(15)
                 _ = try bits.bit() // dependent_slice_segments_enabled_flag
                 let output = try bits.bit(), extra = try bits.read(3)
+                rememberParameter(key: 64 + id, bytes: unit)
                 pps[id] = PPS(sps:spsID, output:output, extra:extra)
             case 0...31: slices.append(unit)
             default: break
@@ -136,6 +138,12 @@ nonisolated struct AppleHPHEVCReferenceGuard {
         // but never permits an acknowledgement of an unverified reference.
         if clean.count > 64, let oldest = clean.min() { clean.remove(oldest) }
         return true
+    }
+    private mutating func rememberParameter(key: Int, bytes: Data) {
+        if let prior = parameterBytes[key], prior != bytes {
+            epoch += 1; clean.removeAll(); previousPOC = 0
+        }
+        parameterBytes[key] = bytes
     }
     private static func width(_ count: Int) -> Int { count <= 1 ? 0 : Int.bitWidth - (count - 1).leadingZeroBitCount }
     private static func referenceSet(_ bits: inout Bits, previous: [[Reference]], inline: Bool) throws -> [Reference] {
