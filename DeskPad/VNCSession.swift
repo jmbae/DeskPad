@@ -666,7 +666,7 @@ private actor RFBClient {
                     #if DEBUG
                     VNCControlDiagnostics.logger.notice("HP probe encrypted channel key received")
                     #endif
-                    let offer = try AppleHPMediaOffer.make(videoProfile: .hevcSinglePicture)
+                    let offer = try AppleHPMediaOffer.make(videoProfile: .hevcSinglePicture, enableLTR: true)
                     hpCipher = cipher
                     let playback = await HighPerformancePlayback()
                     let pipeline = try await HighPerformanceMediaPipeline(output: playback, videoPayloadType: 100, videoCodec: .hevc)
@@ -680,6 +680,9 @@ private actor RFBClient {
                     })
                     hpDatagrams = media
                     await MainActor.run {
+                        pipeline.onCleanHEVCFrame = { [weak media] don in
+                            Task { await media?.acknowledgeCleanFrame(don: don) }
+                        }
                         pipeline.onNeedsKeyframe = { [weak media] in
                             Task { await media?.requestKeyframe() }
                         }

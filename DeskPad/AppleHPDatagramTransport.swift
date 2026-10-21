@@ -15,6 +15,10 @@ actor AppleHPDatagramTransport {
     private var lastAuthenticatedPacket = ProcessInfo.processInfo.systemUptime
     private var didStart = false
     private var negotiated = false
+    private let requestedLTR: Bool
+    private var acceptedLTR = false
+    private var lastAcknowledgedDON: UInt16?
+    private var acknowledgementCount = 0
     private let expectedVideoPayloadType: UInt8
     private var remoteVideoSSRC: UInt32?
     private var remoteAudioSSRC: UInt32?
@@ -42,6 +46,7 @@ actor AppleHPDatagramTransport {
     private var rejectionCounts: [String: Int] = [:]
 
     init(offer: AppleHPMediaOffer, videoPayloadType: UInt8 = 123, pipeline: HighPerformanceMediaPipeline, onPlaying: @escaping () async -> Void, onFailure: @escaping (AppleHPFailure) async -> Void) throws {
+        self.requestedLTR = offer.ltrEnabled
         self.expectedVideoPayloadType = videoPayloadType
         self.pipeline = pipeline; self.onPlaying = onPlaying; self.onFailure = onFailure
         heartbeat = try .init(masterKeyBlob: offer.audioKeys.viewerToServer, ssrc: offer.audioSSRC)
@@ -114,8 +119,8 @@ actor AppleHPDatagramTransport {
             }
         } catch { failMedia(.playbackFailure) }
     }
-    func accept(_ answer: AppleHPMediaAnswer) throws {
-        guard !negotiated, answer.secondVideo == nil, answer.video.codecPayloadType == expectedVideoPayloadType else {
+    func accept(_ answer: AppleHPMediaAnswer) async throws {
+        guard active, !negotiated, answer.secondVideo == nil, answer.video.codecPayloadType == expectedVideoPayloadType else {
             throw AppleHPFailure.unsupportedVideoLayout
         }
         #if DEBUG
@@ -129,11 +134,34 @@ actor AppleHPDatagramTransport {
             let tiles = try AppleHPProtoValue.oneNumber(answer.video.descriptionFields, 6)
             guard tiles <= 1 else { throw AppleHPFailure.unsupportedVideoLayout }
         }
+        let ltr = answer.video.descriptionFields[7] == nil ? 0 : try AppleHPProtoValue.oneNumber(answer.video.descriptionFields, 7)
+        guard ltr <= 1, ltr == 0 || requestedLTR else { throw AppleHPFailure.unsupportedVideoLayout }
+        try await pipeline.configureLTR(enabled: ltr == 1)
+        guard active else { throw AppleHPFailure.playbackFailure }
+        acceptedLTR = ltr == 1
+        #if DEBUG
+        VNCControlDiagnostics.logger.notice("HP negotiated LTR=\(self.acceptedLTR)")
+        #endif
         remoteVideoSSRC = answer.video.ssrc
         remoteAudioSSRC = answer.audio.ssrc
         negotiated = true
         lastAuthenticatedPacket = ProcessInfo.processInfo.systemUptime
         requestKeyframe()
+    }
+
+    func acknowledgeCleanFrame(don: UInt16) {
+        guard active, negotiated, acceptedLTR, sockets.count == 2, lastAcknowledgedDON != don else { return }
+        do {
+            let packet = AppleHPLTRAcknowledgement.packet(sender: videoSSRC, don: don)
+            sockets[1].send(try videoFeedback.protect(packet))
+            lastAcknowledgedDON = don
+            acknowledgementCount += 1
+            #if DEBUG
+            if acknowledgementCount <= 3 || acknowledgementCount % 120 == 0 {
+                VNCControlDiagnostics.logger.notice("HP clean frame ACK count=\(self.acknowledgementCount) don=\(don)")
+            }
+            #endif
+        } catch { failMedia(.playbackFailure) }
     }
 
     private func sendVideoFeedback(_ plaintext: Data) throws {
