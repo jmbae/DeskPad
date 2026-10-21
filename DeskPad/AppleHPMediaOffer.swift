@@ -69,7 +69,7 @@ struct AppleHPMediaOffer {
         var description = Proto()
         description.number(1, UInt64(ssrc))
         // VideoSettings field 2 enables RTCP feedback (including NACK). It is
-        // independent of field 7's LTR feature, which remains disabled below.
+        // independent of field 7's explicitly requested LTR feature.
         // Audio uses a different description schema; preserve its field 2.
         description.number(2, video ? 1 : 0)
         if video {

@@ -363,6 +363,9 @@ actor AppleHPDatagramTransport {
             }
         } catch {
             if let playbackError = error as? HighPerformancePlaybackError {
+                #if DEBUG
+                VNCControlDiagnostics.logger.notice("HP playback error=\(String(describing: playbackError), privacy: .public)")
+                #endif
                 switch playbackError {
                 case .backpressure: requestKeyframe()
                 default: failMedia(.playbackFailure); return

@@ -25,6 +25,36 @@ All VCL slices must be validated as intra; arbitrary type-1 packets are not
 accepted as keyframes. Late audio retains its independent sender-report clock.
 The native synchronizer no longer waits for an empty audio renderer.
 
+## Current recovery verification (2026-10-21)
+
+Globe-key hardware verification is now user-owned; it is not a release blocker
+for this task. The AV dropout acceptance checks remain incomplete. Do not infer
+release readiness from the offline/native fixture passes below.
+
+- Added bounded authenticated audio reorder/NACK and dual-port video feedback.
+  The actual server has not retransmitted any observed missing packets yet.
+- Added opt-in HEVC LTR negotiation, exact DON acknowledgements, a bounded RPS
+  reference guard, and serial VideoToolbox decode completion before ACK. Native
+  H264/HEVC 420/444 fixture tests and invalid-frame/no-ACK tests pass.
+- Live single-bank HEVC offer with LTR enabled receives answer field 7 = 1 but
+  field 2 = 0. Both parameter AP and contiguous VCL fragments lack DON. Thus no
+  clean-frame acknowledgement is sent. The native two-bank offer produced the
+  same no-DON result and is not enabled in the session. The answer parser now
+  validates bounded capability lists separately from actual RTP codec selection.
+- Native RPS validation now works without DON (never sending ACK). Actual 6K
+  IDR and P pictures decoded successfully, missing-reference pictures were
+  rejected, and later valid pictures resumed. Initial parameter/IDR loss is
+  gated until a complete configured IDR arrives. Live first frame ~1.6 s.
+- Separate audio 48kHz RR feedback reports loss/jitter with the correct audio
+  SSRC/key/SR clock. Actual audio loss remains roughly 5%; retransmission has
+  not been observed. Public AudioCodec AAC-ELD PLC probes returned no concealed
+  frame, so no unsupported concealment behavior is claimed.
+- Full simulator suite: 31 XCTest cases and 18 Swift Testing cases passed.
+  Debug simulator and Release device compilation passed. The project now targets
+  iPadOS 26 consistently with the runtime used for verification.
+- This is not yet proof that sustained loss recovery is sufficient. A sustained flash/beep fixture,
+  interruption recovery and reconnect must pass before main merge/TestFlight.
+
 ## Verified on 2026-10-20
 
 - Seven native iPad media tests pass: H.264 and HEVC 4:2:0/4:4:4 presentation,
