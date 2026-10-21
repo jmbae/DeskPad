@@ -184,6 +184,13 @@ final class HighPerformanceSampleFactory {
     private var diagnosticPresentationPolls = 0
     private var audioDiagnostic = HighPerformanceAudioDiagnostic()
     #endif
+    /// Suspension can invalidate the renderer even while its network remains healthy.
+    /// Recreate the session instead of flushing away a predictive frame's references.
+    var needsRecovery: Bool {
+        videoLayer.sampleBufferRenderer.requiresFlushToResumeDecoding ||
+        videoLayer.sampleBufferRenderer.status == .failed || audioRenderer.status == .failed
+    }
+
     var presentationSeconds: Double { CMTimeGetSeconds(synchronizer.currentTime()) }
 
     /// A decoded pixel buffer actually selected for display, not merely queued RTP.

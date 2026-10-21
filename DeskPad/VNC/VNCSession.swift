@@ -30,6 +30,9 @@ nonisolated enum VNCControlDiagnostics {
 #endif
 
 private struct RFBAppleBlackFirstFrame: Error {}
+private struct RFBRendererResumeRequired: LocalizedError {
+    var errorDescription: String? { "앱 복귀 후 화면과 소리 재생을 다시 연결해야 합니다." }
+}
 
 enum VNCConnectionState: Equatable {
     case disconnected
@@ -163,6 +166,11 @@ final class VNCSessionModel {
         case .resume: scheduleResume(delay: 0, attempt: 0)
         case .retry(let attempt, let delay): scheduleResume(delay: delay, attempt: attempt)
         case .stop: disconnect()
+        case nil:
+            if highPerformancePlayback?.needsRecovery == true {
+                lifecycleLog("foreground renderer requires recovery")
+                fail(RFBRendererResumeRequired(), generation: generation)
+            }
         default: break
         }
     }
@@ -369,7 +377,7 @@ final class VNCSessionModel {
         VNCControlDiagnostics.logger.error("session failure: \(String(describing: error), privacy: .public)")
         #endif
         let recoverable: Bool
-        if error is RFBConnectionClosed { recoverable = true }
+        if error is RFBConnectionClosed || error is RFBRendererResumeRequired { recoverable = true }
         else if let network = error as? NWError {
             switch network { case .posix, .dns: recoverable = true; default: recoverable = false }
         } else if case RFBClient.ClientError.connection = error { recoverable = true }
