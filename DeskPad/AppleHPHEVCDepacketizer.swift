@@ -35,7 +35,8 @@ struct AppleHPHEVCDepacketizer {
         if let summary = diagnosticFUProbe.observe(sequence: sequence, timestamp: incoming, payload: payload) {
             diagnosticFUReports += 1
             if diagnosticFUReports <= 12 || diagnosticFUReports % 100 == 0 {
-                VNCControlDiagnostics.logger.notice("HP FU candidate report=\(self.diagnosticFUReports) fragments=\(summary.fragments) consistent=\(summary.consistent) contiguous=\(summary.contiguous) nalType=\(summary.nalType)")
+                let report = diagnosticFUReports
+                VNCControlDiagnostics.logger.notice("HP FU candidate report=\(report) fragments=\(summary.fragments) consistent=\(summary.consistent) contiguous=\(summary.contiguous) nalType=\(summary.nalType)")
             }
         }
         #endif
