@@ -1,4 +1,36 @@
-# High performance connection — integration and live acceptance pending
+# High performance connection — experimental TestFlight integration
+
+## 2026-10-21 audio completion and release evidence
+
+Short AAC-ELD packet gaps now use a persistent native PCM decoder and bounded
+waveform continuation/crossfade (maximum 40 ms). Longer gaps fade out and resume
+at the original sender PTS; this does not reconstruct missing original audio.
+Prepared chunks and the initial sample PTS survive renderer backpressure, so a
+new sender report or partial enqueue cannot decode an AU twice. Reconnect clears
+converter, pending output and concealment history.
+
+- Full simulator suite: 31 XCTest + 19 Swift Testing tests passed (50 total).
+- Native iPad AAC-to-PCM rendering test passed with skipped source AUs, exact
+  subsequent PTS, rendering status and shared-clock advancement.
+- Wire 480-frame ELD, initial priming, 10/20 ms gaps, 40 ms cap, long-gap reset,
+  RTP wrap, partial backpressure and SR-anchor retries passed offline tests.
+- Actual Mac 6016×3384 connection rendered video and continuously decoded the
+  live 480-frame audio stream. At 1,500 enqueued AUs the decoder had processed
+  719,968 frames and synthesized 5,771 gap frames, including one capped long gap,
+  without a playback error. A subsequent manual reconnect also presented video
+  and restarted PCM decoding. One earlier attempt lost the initial video frame
+  and timed out; bounded startup recovery is being verified separately.
+- An independent review checked reference/decoder generations, audio retry
+  identity, partial output, long-gap history and reconnect resets.
+
+The high-performance connection remains explicitly experimental; standard VNC
+is the default. Sustained audible flash/beep validation of this final build has
+not been completed. Long network losses cannot be reconstructed, and sustained
+video loss can still leave the experimental stream waiting for a clean keyframe.
+This is an internal-test build, not a claim of loss-free playback.
+Globe hardware validation is user-owned. The following sections preserve earlier
+investigation evidence and must not be read as current unresolved code failures.
+
 
 The previous prototype received authenticated SRTP but did not present a visible
 frame. Its virtual-display request blanked the host and the user restored the
@@ -25,11 +57,10 @@ All VCL slices must be validated as intra; arbitrary type-1 packets are not
 accepted as keyframes. Late audio retains its independent sender-report clock.
 The native synchronizer no longer waits for an empty audio renderer.
 
-## Current recovery verification (2026-10-21)
+## Earlier recovery investigation (2026-10-21, before PCM concealment)
 
-Globe-key hardware verification is now user-owned; it is not a release blocker
-for this task. The AV dropout acceptance checks remain incomplete. Do not infer
-release readiness from the offline/native fixture passes below.
+The following notes record the pre-PCM investigation. See the release evidence
+above for the current implementation and remaining verification limits.
 
 - Added bounded authenticated audio reorder/NACK and dual-port video feedback.
   The actual server has not retransmitted any observed missing packets yet.
@@ -52,8 +83,7 @@ release readiness from the offline/native fixture passes below.
 - Full simulator suite: 31 XCTest cases and 18 Swift Testing cases passed.
   Debug simulator and Release device compilation passed. The project now targets
   iPadOS 26 consistently with the runtime used for verification.
-- This is not yet proof that sustained loss recovery is sufficient. A sustained flash/beep fixture,
-  interruption recovery and reconnect must pass before main merge/TestFlight.
+- These earlier checks alone did not establish sustained audible loss recovery.
 
 ## Verified on 2026-10-20
 
