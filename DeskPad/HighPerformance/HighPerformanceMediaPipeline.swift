@@ -345,7 +345,15 @@ extension HighPerformanceMediaOutput {
                             }
                             else { self.referenceGuard.reset(); self.needsKeyframe = true; self.onNeedsKeyframe?() }
                         })
-                    } else { try output.enqueueVideo(sample) }
+                    } else {
+                        // Non-LTR HEVC and H.264 need the same actual native
+                        // decode evidence; enqueue alone cannot prove progress.
+                        try output.enqueueVideo(sample, prepare: { true }) { [weak self] successful in
+                            guard let self else { return }
+                            if successful { self.lastCleanVideoDecodeTime = ProcessInfo.processInfo.systemUptime }
+                            else { self.loseVideoContinuity() }
+                        }
+                    }
                 }
                 catch { loseVideoContinuity(); throw error }
             }

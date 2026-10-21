@@ -90,7 +90,11 @@ import CoreMedia
     try pipeline.consumeVideo(packet(1));
     try pipeline.consumeVideo(packet(1, seq: 1, payload: Data(nal.prefix(2)) + Data([0,9]) + Data(nal.dropFirst(2)))); precondition(sink.video == 0)
     try pipeline.observe([HighPerformanceSenderReport(ssrc:1,ntpSeconds:10,ntpFraction:0,rtpTimestamp:1)],clockRate:90000)
-    precondition(sink.video == 1 && sink.starts == 1)
+    precondition(sink.decodes.count == 1 && sink.starts == 1)
+    precondition(pipeline.lastCleanVideoDecodeTime == nil, "enqueue is not native decode progress")
+    let plainDecode = sink.decodes.removeFirst()
+    precondition(plainDecode.0()); plainDecode.1(true)
+    precondition(pipeline.lastCleanVideoDecodeTime != nil, "non-LTR decode must advance progress")
     do { try pipeline.consumeVideo(packet(2)); fatalError("multi-SSRC silently accepted") } catch {}
     pipeline.reset(); precondition(!pipeline.isPlaying)
     let feedbackSink = HEVCSink()

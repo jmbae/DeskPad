@@ -5,6 +5,21 @@ import CoreMedia
 @testable import DeskPad
 
 @MainActor struct HighPerformanceNativeVideoTests {
+    @Test func nativeH264ProducesDecodedOutput() async throws {
+        let factory = HighPerformanceSampleFactory()
+        let data = Data(base64Encoded: "AAAAAWdCwAraEJsBEAAAAwAQAAADACjxImoAAAABaM4PyAAAAQYF//9P3EXpvebZSLeWLNgg2SPu73gyNjQgLSBjb3JlIDE2NSByMzIyMiBiMzU2MDVhIC0gSC4yNjQvTVBFRy00IEFWQyBjb2RlYyAtIENvcHlsZWZ0IDIwMDMtMjAyNSAtIGh0dHA6Ly93d3cudmlkZW9sYW4ub3JnL3gyNjQuaHRtbCAtIG9wdGlvbnM6IGNhYmFjPTAgcmVmPTEgZGVibG9jaz0wOjA6MCBhbmFseXNlPTA6MCBtZT1kaWEgc3VibWU9MCBwc3k9MSBwc3lfcmQ9MS4wMDowLjAwIG1peGVkX3JlZj0wIG1lX3JhbmdlPTE2IGNocm9tYV9tZT0xIHRyZWxsaXM9MCA4eDhkY3Q9MCBjcW09MCBkZWFkem9uZT0yMSwxMSBmYXN0X3Bza2lwPTEgY2hyb21hX3FwX29mZnNldD0wIHRocmVhZHM9MSBsb29rYWhlYWRfdGhyZWFkcz0xIHNsaWNlZF90aHJlYWRzPTAgbnI9MCBkZWNpbWF0ZT0xIGludGVybGFjZWQ9MCBibHVyYXlfY29tcGF0PTAgY29uc3RyYWluZWRfaW50cmE9MCBiZnJhbWVzPTAgd2VpZ2h0cD0wIGtleWludD0yNTAga2V5aW50X21pbj0xIHNjZW5lY3V0PTAgaW50cmFfcmVmcmVzaD0wIHJjPWNyZiBtYnRyZWU9MCBjcmY9MjMuMCBxY29tcD0wLjYwIHFwbWluPTAgcXBtYXg9NjkgcXBzdGVwPTQgaXBfcmF0aW89MS40MCBhcT0wAIAAAAFliIQ6JigACQLJycnXXXXXXXXXXXXg")!
+        let sample = try #require(try factory.h264AccessUnit(data, presentationSeconds: 0))
+        let playback = HighPerformancePlayback()
+        defer { playback.reset() }
+        var completed: Bool?
+        try playback.enqueueVideo(sample, prepare: { true }) { completed = $0 }
+        for _ in 0..<100 {
+            if completed != nil { break }
+            try await Task.sleep(for: .milliseconds(20))
+        }
+        #expect(completed == true)
+    }
+
     @Test func cleanNativeHEVCFrameDisplaysAndCorruptFrameCannotAcknowledge() async throws {
         let data = Data(base64Encoded: "AAAAAUABDAH//wQIAAADAJ4IAAADAAAelZgJAAAAAUIBAQQIAAADAJ4IAAADAAAekAQQILLKzSSZXgLQEAAAAwAQAAADAeCAAAAAAUQBwXKGDEIkAAAAASgBrwhg+e6Xf/aVn9oFLijUaQcu")!
         let b = [UInt8](data)

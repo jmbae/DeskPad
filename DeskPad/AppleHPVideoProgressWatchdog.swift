@@ -30,6 +30,7 @@ nonisolated struct AppleHPVideoProgressWatchdog {
 }
 
 #if DEBUG
+import os
 /// One process-wide loss window survives client replacements. Only local
 /// received datagrams are discarded; no host/network configuration changes.
 nonisolated final class AppleHPDebugMediaLoss: @unchecked Sendable {
@@ -38,6 +39,9 @@ nonisolated final class AppleHPDebugMediaLoss: @unchecked Sendable {
     private let after: Double?
     private let duration: Double?
     private var began: Double?
+    private var loggedStart = false
+    private var loggedEnd = false
+    private let logger = Logger(subsystem: "kr.co.codegrove.DeskPad", category: "HPDebugMediaLoss")
 
     init(arguments: [String]) {
         func value(_ prefix: String) -> Double? {
@@ -54,6 +58,14 @@ nonisolated final class AppleHPDebugMediaLoss: @unchecked Sendable {
         guard let after, let duration, duration > 0 else { return false }
         if began == nil { began = now }
         let elapsed = now - began!
+        if elapsed >= after, !loggedStart {
+            loggedStart = true
+            logger.notice("HP debug media loss started elapsed=\(elapsed) duration=\(duration)")
+        }
+        if elapsed >= after + duration, !loggedEnd {
+            loggedEnd = true
+            logger.notice("HP debug media loss ended elapsed=\(elapsed) duration=\(duration)")
+        }
         return elapsed >= after && elapsed < after + duration
     }
 }

@@ -9,6 +9,11 @@ import CoreMedia
     func enqueueVideo(_ sample:CMSampleBuffer)throws {
         if let array = CMSampleBufferGetSampleAttachmentsArray(sample, createIfNecessary: false) as? [[CFString: Any]], array.first?[kCMSampleAttachmentKey_DoNotDisplay] as? Bool == true { hiddenVideo += 1 }
         video.append(CMTimeGetSeconds(CMSampleBufferGetPresentationTimeStamp(sample))) }
+    func enqueueVideo(_ sample: CMSampleBuffer, prepare: @escaping @MainActor @Sendable () -> Bool, decodeCompletion: @escaping @MainActor @Sendable (Bool) -> Void) throws {
+        precondition(prepare())
+        try enqueueVideo(sample)
+        decodeCompletion(true)
+    }
     func reset() { audio=[];video=[];startTimes=[] }
 }
 @main struct Harness {
@@ -44,6 +49,7 @@ import CoreMedia
     try pipeline.observe([HighPerformanceSenderReport(ssrc:2,ntpSeconds:100,ntpFraction:0,rtpTimestamp:4800)],clockRate:48000)
     precondition(sink.startTimes.count==1 && sink.audio.count<=20 && sink.video.count==1,"did not start common timeline")
     precondition(abs(sink.startTimes[0])<0.000001 && abs(sink.video[0])<0.000001 && abs(sink.audio[0])<0.000001)
+    precondition(pipeline.lastCleanVideoDecodeTime != nil, "H264 native completion must advance progress")
     precondition(pipeline.audioPrerollDrops == 10)
     sink.presentationSeconds = 1
     let playedAudio = sink.audio.count
