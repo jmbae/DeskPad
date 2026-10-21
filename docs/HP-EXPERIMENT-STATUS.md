@@ -133,3 +133,24 @@ The route to the remote host uses a 1280-byte tunnel MTU while observed media
 packets can exceed it. Fragmentation loss is only a hypothesis: packet-header
 capture is unavailable without BPF permission. No speculative MTU negotiation
 field or physical-display configuration was added.
+
+
+## 2026-10-21 14:14–14:18 keyboard UI verification
+
+The automation focus issue is resolved: accessibility activation of the inner
+simulator control did not change the host keyboard focus. A coordinate click
+inside the simulated text surface delivers actual key events. In the native
+reference view, Shift+A produced A after switching to English. In the production
+RemoteDesktopUIView hosted by the isolated QA lab, Shift+A, b, Shift+C produced
+exact outgoing text `AbC`. After switching the system input language to Korean,
+individual hardware key events produced `한글 때 `, including Shift+E for ㄸ.
+The production input-language callback reported en-US -> ko-KR. No pasted text or
+synthetic UIPress stubs were used for these UI checks.
+
+Physical Globe acceptance is still not complete: the automation key API rejects
+both fn and Globe with keyNotFound. An attempted simulator-only Caps Lock-to-Globe
+mapping cannot be configured because iPadOS exposes no modifier-key entries in
+this simulated hardware environment. No modifier setting was changed. Switching
+through the software keyboard proves input-mode handling but does not establish
+physical Globe behavior. The QA lab is not part of release sources. Main merge
+and TestFlight remain gated; existing media acceptance blockers also remain.
