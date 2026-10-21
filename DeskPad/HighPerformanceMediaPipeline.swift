@@ -45,6 +45,7 @@ extension HighPerformancePlayback: HighPerformanceMediaOutput {}
     private(set) var audioPrerollDrops = 0
     private(set) var audioBackpressureEvents = 0
     private var receivedAudioPackets = 0
+    private var audioArrival = HighPerformanceAudioArrivalDiagnostics()
     private var needsKeyframe = true
     private(set) var isPlaying = false
     #if DEBUG
@@ -200,10 +201,11 @@ extension HighPerformancePlayback: HighPerformanceMediaOutput {}
         if let selectedAudio, selectedAudio != packet.ssrc { throw Failure.unsupportedStream }
         selectedAudio = packet.ssrc
         receivedAudioPackets += 1
+        audioArrival.observe(sequence: packet.sequenceNumber, timestamp: packet.timestamp, framesPerPacket: audioFrames)
         defer {
             #if DEBUG
             if receivedAudioPackets % 100 == 0 {
-                VNCControlDiagnostics.logger.notice("HP audio scheduling received=\(self.receivedAudioPackets) late_drops=\(self.audioLateDrops) preroll_drops=\(self.audioPrerollDrops) backpressure_events=\(self.audioBackpressureEvents) pending=\(self.pendingAudio.count)")
+                VNCControlDiagnostics.logger.notice("HP audio scheduling received=\(self.receivedAudioPackets) late_drops=\(self.audioLateDrops) preroll_drops=\(self.audioPrerollDrops) backpressure_events=\(self.audioBackpressureEvents) pending=\(self.pendingAudio.count) seq_skipped=\(self.audioArrival.forwardSkipped) seq_behind=\(self.audioArrival.behindHighWater) timestamp_discontinuities=\(self.audioArrival.timestampDiscontinuities)")
             }
             #endif
         }
@@ -227,6 +229,7 @@ extension HighPerformancePlayback: HighPerformanceMediaOutput {}
         output.reset(); clock.reset(); videos.removeAll(); pendingVideo.removeAll(); pendingAudio.removeAll()
         selectedVideo = nil; selectedAudio = nil; needsKeyframe = true; isPlaying = false
         audioLateDrops = 0; audioPrerollDrops = 0; audioBackpressureEvents = 0; receivedAudioPackets = 0
+        audioArrival = HighPerformanceAudioArrivalDiagnostics()
         // Keep the successfully negotiated audio format; it carries no session time/key state.
     }
 
@@ -354,5 +357,29 @@ enum HighPerformanceH264Recovery {
             hasSlice = true
         }
         return hasSlice && hasFirstSlice
+    }
+}
+
+/// Observes authenticated arrival order without changing playback or claiming final loss.
+/// Forward holes may subsequently arrive; behind-high-water counts those late arrivals.
+/// SRTP has already removed duplicates. Storage stays constant for arbitrarily long sessions.
+nonisolated struct HighPerformanceAudioArrivalDiagnostics {
+    private var highSequence: UInt16?
+    private var highTimestamp: UInt32 = 0
+    private(set) var forwardSkipped = 0
+    private(set) var behindHighWater = 0
+    private(set) var timestampDiscontinuities = 0
+
+    mutating func observe(sequence: UInt16, timestamp: UInt32, framesPerPacket: UInt32) {
+        guard let previous = highSequence else {
+            highSequence = sequence; highTimestamp = timestamp; return
+        }
+        let distance = Int(Int16(bitPattern: sequence &- previous))
+        guard distance > 0 else { behindHighWater += 1; return }
+        forwardSkipped += distance - 1
+        if timestamp &- highTimestamp != UInt32(distance) * framesPerPacket {
+            timestampDiscontinuities += 1
+        }
+        highSequence = sequence; highTimestamp = timestamp
     }
 }

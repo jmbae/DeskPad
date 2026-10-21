@@ -18,6 +18,15 @@ import CoreMedia
     precondition(!HighPerformanceH264Recovery.isIntraPicture([Data([0x61,0xb0]),Data([0x61,0xc0])]))
     precondition(!HighPerformanceH264Recovery.isIntraPicture([Data([0x61,0])])) // truncated ue(v)
     precondition(!HighPerformanceH264Recovery.isIntraPicture([Data([0x61,0x4c])])) // no first slice
+    var arrivals = HighPerformanceAudioArrivalDiagnostics()
+    arrivals.observe(sequence: 65534, timestamp: UInt32.max - 479, framesPerPacket: 480)
+    arrivals.observe(sequence: 0, timestamp: 480, framesPerPacket: 480)
+    precondition(arrivals.forwardSkipped == 1 && arrivals.timestampDiscontinuities == 0)
+    arrivals.observe(sequence: 65535, timestamp: 0, framesPerPacket: 480)
+    arrivals.observe(sequence: 1, timestamp: 960, framesPerPacket: 480)
+    precondition(arrivals.behindHighWater == 1 && arrivals.forwardSkipped == 1 && arrivals.timestampDiscontinuities == 0, "late arrival must not move the sequence/timestamp high water backwards")
+    arrivals.observe(sequence: 2, timestamp: 1920, framesPerPacket: 480)
+    precondition(arrivals.timestampDiscontinuities == 1, "contiguous packet with missing media time needs distinct evidence")
     let sink=Sink();let pipeline=try HighPerformanceMediaPipeline(output:sink)
     let frame=try Data(contentsOf:URL(fileURLWithPath:CommandLine.arguments[1]))
     let b=Array(frame);var units:[Data]=[];var starts:[(Int,Int)]=[];var i=0
