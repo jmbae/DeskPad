@@ -1,10 +1,11 @@
 import Foundation
 import CoreMedia
 @MainActor final class Sink: HighPerformanceMediaOutput {
+    var rejectAudio = false
     var presentationSeconds: Double = 0
     var startTimes:[Double]=[]; var audio:[Double]=[];var video:[Double]=[]; var hiddenVideo = 0
     func start(at seconds:Double,playoutDelay:Double)throws { startTimes.append(seconds) }
-    func enqueueAudio(_ sample:CMSampleBuffer)throws { audio.append(CMTimeGetSeconds(CMSampleBufferGetPresentationTimeStamp(sample))) }
+    func enqueueAudio(_ sample:CMSampleBuffer)throws { if rejectAudio { throw HighPerformancePlaybackError.backpressure }; audio.append(CMTimeGetSeconds(CMSampleBufferGetPresentationTimeStamp(sample))) }
     func enqueueVideo(_ sample:CMSampleBuffer)throws {
         if let array = CMSampleBufferGetSampleAttachmentsArray(sample, createIfNecessary: false) as? [[CFString: Any]], array.first?[kCMSampleAttachmentKey_DoNotDisplay] as? Bool == true { hiddenVideo += 1 }
         video.append(CMTimeGetSeconds(CMSampleBufferGetPresentationTimeStamp(sample))) }
@@ -34,10 +35,22 @@ import CoreMedia
     try pipeline.observe([HighPerformanceSenderReport(ssrc:2,ntpSeconds:100,ntpFraction:0,rtpTimestamp:4800)],clockRate:48000)
     precondition(sink.startTimes.count==1 && sink.audio.count<=20 && sink.video.count==1,"did not start common timeline")
     precondition(abs(sink.startTimes[0])<0.000001 && abs(sink.video[0])<0.000001 && abs(sink.audio[0])<0.000001)
+    precondition(pipeline.audioPrerollDrops == 10)
     sink.presentationSeconds = 1
     let playedAudio = sink.audio.count
     try pipeline.consumeAudioAccessUnit(packet(Data([1,2,3]),seq:31,ssrc:2,ts:14400,pt:101))
     precondition(sink.audio.count == playedAudio, "late mapped audio must not replay obsolete preroll")
+    precondition(pipeline.audioLateDrops == 1)
+    sink.presentationSeconds = 0
+    sink.rejectAudio = true
+    do {
+        try pipeline.consumeAudioAccessUnit(packet(Data([1,2,3]),seq:32,ssrc:2,ts:14880,pt:101))
+        fatalError("expected native backpressure")
+    } catch HighPerformancePlaybackError.backpressure {}
+    precondition(pipeline.audioBackpressureEvents == 1 && pipeline.pendingAudioCount == 1)
+    sink.rejectAudio = false
+    try pipeline.observe([], clockRate: 48000)
+    precondition(pipeline.pendingAudioCount == 0 && sink.audio.count == playedAudio + 1, "backpressure must retain rather than drop audio")
     let offsetSink = Sink()
     let offsetPipeline = try HighPerformanceMediaPipeline(output: offsetSink)
     for (n,nal) in units.enumerated() { try offsetPipeline.consumeVideo(packet(nal,seq:UInt16(n),ssrc:10,ts:90000,pt:100,marker:n==units.count-1)) }
@@ -72,6 +85,7 @@ import CoreMedia
     do { _=try HighPerformanceMediaPipeline(output:Sink(),videoPayloadType:128); fatalError("invalid7bit payload type accepted") } catch {}
     do { _=try HighPerformanceMediaPipeline(output:Sink(),videoPayloadType:101); fatalError("ambiguous audio/video PT accepted") } catch {}
     pipeline.reset();precondition(!pipeline.isPlaying && pipeline.pendingAudioCount==0 && pipeline.pendingVideoCount==0)
+    precondition(pipeline.audioLateDrops == 0 && pipeline.audioPrerollDrops == 0 && pipeline.audioBackpressureEvents == 0)
     print("Pipeline: video-first startup and independent audio SRs, bounded preroll, commonPTS startup and reset passed")
  }
 }

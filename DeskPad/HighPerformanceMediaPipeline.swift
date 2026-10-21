@@ -41,6 +41,10 @@ extension HighPerformancePlayback: HighPerformanceMediaOutput {}
     private var selectedAudio: UInt32?
     private var pendingVideo: [PendingVideo] = []
     private var pendingAudio: [PendingAudio] = []
+    private(set) var audioLateDrops = 0
+    private(set) var audioPrerollDrops = 0
+    private(set) var audioBackpressureEvents = 0
+    private var receivedAudioPackets = 0
     private var needsKeyframe = true
     private(set) var isPlaying = false
     #if DEBUG
@@ -195,12 +199,24 @@ extension HighPerformancePlayback: HighPerformanceMediaOutput {}
         guard packet.payloadType == 101, packet.ssrc != selectedVideo, !packet.payload.isEmpty, packet.payload.count <= 65535 else { throw Failure.unsupportedStream }
         if let selectedAudio, selectedAudio != packet.ssrc { throw Failure.unsupportedStream }
         selectedAudio = packet.ssrc
+        receivedAudioPackets += 1
+        defer {
+            #if DEBUG
+            if receivedAudioPackets % 100 == 0 {
+                VNCControlDiagnostics.logger.notice("HP audio scheduling received=\(self.receivedAudioPackets) late_drops=\(self.audioLateDrops) preroll_drops=\(self.audioPrerollDrops) backpressure_events=\(self.audioBackpressureEvents) pending=\(self.pendingAudio.count)")
+            }
+            #endif
+        }
         pendingAudio.append(PendingAudio(ssrc: packet.ssrc, timestamp: packet.timestamp, data: packet.payload))
         let limit = Int(audioRate * 0.2 / Double(audioFrames))
-        if pendingAudio.count > limit { pendingAudio.removeFirst(pendingAudio.count - limit) }
+        if pendingAudio.count > limit {
+            audioPrerollDrops += pendingAudio.count - limit
+            pendingAudio.removeFirst(pendingAudio.count - limit)
+        }
         // Also bound by RTP media duration, not merely packet count, when packets are sparse.
         while let first = pendingAudio.first, let last = pendingAudio.last,
               Int32(bitPattern: last.timestamp &- first.timestamp) > Int32(audioRate * 0.2) - Int32(audioFrames) {
+            audioPrerollDrops += 1
             pendingAudio.removeFirst()
         }
         try drain()
@@ -210,6 +226,7 @@ extension HighPerformancePlayback: HighPerformanceMediaOutput {}
     func reset() {
         output.reset(); clock.reset(); videos.removeAll(); pendingVideo.removeAll(); pendingAudio.removeAll()
         selectedVideo = nil; selectedAudio = nil; needsKeyframe = true; isPlaying = false
+        audioLateDrops = 0; audioPrerollDrops = 0; audioBackpressureEvents = 0; receivedAudioPackets = 0
         // Keep the successfully negotiated audio format; it carries no session time/key state.
     }
 
@@ -269,10 +286,17 @@ extension HighPerformancePlayback: HighPerformanceMediaOutput {}
             guard let pts = clock.presentationSeconds(ssrc: audio.ssrc, timestamp: audio.timestamp) else { break }
             // A late audio SR must not replay obsolete preroll after video has advanced.
             if pts + Double(audioFrames) / audioRate < (startupPTS ?? (isPlaying ? output.presentationSeconds : -.infinity)) {
+                audioLateDrops += 1
                 pendingAudio.removeFirst()
                 continue
             }
-            try output.enqueueAudio(audioFactory.aacAccessUnit(audio.data, presentationSeconds: pts))
+            let sample = try audioFactory.aacAccessUnit(audio.data, presentationSeconds: pts)
+            do { try output.enqueueAudio(sample) }
+            catch HighPerformancePlaybackError.backpressure {
+                // Count retries, not lost AUs: this AU remains queued for the next drain.
+                audioBackpressureEvents += 1
+                throw HighPerformancePlaybackError.backpressure
+            }
             pendingAudio.removeFirst()
         }
     }
