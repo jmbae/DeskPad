@@ -8,10 +8,16 @@ import os
     var presentationSeconds: Double { get }
     func start(at senderSeconds: Double, playoutDelay: Double) throws
     func enqueueVideo(_ sample: CMSampleBuffer) throws
+    func enqueueVideo(_ sample: CMSampleBuffer, prepare: @escaping @MainActor @Sendable () -> Bool, decodeCompletion: @escaping @MainActor @Sendable (Bool) -> Void) throws
     func enqueueAudio(_ sample: CMSampleBuffer) throws
     func reset()
 }
 extension HighPerformancePlayback: HighPerformanceMediaOutput {}
+extension HighPerformanceMediaOutput {
+    func enqueueVideo(_ sample: CMSampleBuffer, prepare: @escaping @MainActor @Sendable () -> Bool, decodeCompletion: @escaping @MainActor @Sendable (Bool) -> Void) throws {
+        throw HighPerformancePlaybackError.missingConfiguration
+    }
+}
 
 /// Single-display H.264 + AAC-ELD coordinator. All inputs must already be authenticated.
 /// RTP arrival times are never used as A/V timestamps. A session without Sender Reports
@@ -23,9 +29,10 @@ extension HighPerformancePlayback: HighPerformanceMediaOutput {}
         var depacketizer = AppleHPVideoDepacketizer()
         var hevcDepacketizer = AppleHPHEVCDepacketizer()
         var expectedSequence: UInt16?
+        var referenceParameters: [Data] = []
         let factory = HighPerformanceSampleFactory()
     }
-    private struct PendingVideo { let ssrc: UInt32; let timestamp: UInt32; let annexB: Data; let keyframe: Bool; var hevcUnits: [Data]? = nil }
+    private struct PendingVideo { let ssrc: UInt32; let timestamp: UInt32; let annexB: Data; let keyframe: Bool; var hevcUnits: [Data]? = nil; var don: UInt16? = nil }
     private struct PendingAudio { let ssrc: UInt32; let timestamp: UInt32; let data: Data }
     private let output: any HighPerformanceMediaOutput
     private let audioFactory = HighPerformanceSampleFactory()
@@ -46,6 +53,14 @@ extension HighPerformancePlayback: HighPerformanceMediaOutput {}
     private(set) var audioBackpressureEvents = 0
     private var receivedAudioPackets = 0
     private var audioArrival = HighPerformanceAudioArrivalDiagnostics()
+    private var ltrEnabled = false
+    private var referenceGuard = AppleHPHEVCReferenceGuard()
+    var onCleanHEVCFrame: ((UInt16) -> Void)?
+    private final class PreparedPicture { var picture: AppleHPHEVCReferenceGuard.Picture? }
+    func configureLTR(enabled: Bool) throws {
+        guard !isPlaying, pendingVideo.isEmpty, videos.isEmpty, !enabled || videoCodec == .hevc else { throw Failure.invalidConfiguration }
+        ltrEnabled = enabled; referenceGuard.reset()
+    }
     private var needsKeyframe = true
     private(set) var isPlaying = false
     #if DEBUG
@@ -53,6 +68,8 @@ extension HighPerformancePlayback: HighPerformanceMediaOutput {}
     private var diagnosticVideoAUs = 0
     private var diagnosticVideoGaps = 0
     private var diagnosticReports = 0
+    private var diagnosticLTRRejected = 0
+    private var diagnosticLTRDecoded = 0
     #endif
     var onNeedsKeyframe: (() -> Void)?
     var pendingAudioCount: Int { pendingAudio.count }
@@ -161,12 +178,12 @@ extension HighPerformancePlayback: HighPerformanceMediaOutput {}
                 VNCControlDiagnostics.logger.notice("HP HEVC sequence gaps=\(self.diagnosticVideoGaps) relative_distance=\(distance)")
             }
             #endif
-            loseVideoContinuity()
+            if !ltrEnabled { loseVideoContinuity() }
         }
         state.expectedSequence = packet.sequenceNumber &+ 1
         let units: [Data]?
         do { units = try state.hevcDepacketizer.append(sequence: packet.sequenceNumber, timestamp: packet.timestamp, marker: packet.marker, payload: packet.payload) }
-        catch { videos[packet.ssrc] = state; loseVideoContinuity(); throw error }
+        catch { videos[packet.ssrc] = state; if !ltrEnabled { loseVideoContinuity() }; throw error }
         videos[packet.ssrc] = state
         guard let units else { return }
         #if DEBUG
@@ -177,20 +194,28 @@ extension HighPerformancePlayback: HighPerformanceMediaOutput {}
         }
         #endif
         let parameters = units.filter { (32...34).contains(Int(($0.first! >> 1) & 63)) }
-        if !parameters.isEmpty { _ = try state.factory.hevcAccessUnit(parameters, presentationSeconds: 0) }
+        if !parameters.isEmpty {
+            _ = try state.factory.hevcAccessUnit(parameters, presentationSeconds: 0)
+            for parameter in parameters {
+                let type = (parameter.first! >> 1) & 63
+                state.referenceParameters.removeAll { ($0.first! >> 1) & 63 == type }
+                state.referenceParameters.append(parameter)
+            }
+            videos[packet.ssrc] = state
+        }
         let picture = units.filter { ($0.first! >> 1) & 63 < 32 }
         guard !picture.isEmpty else { return }
         // Accept BLA/IDR pictures; CRA needs RASL suppression and is deliberately
         // excluded until that decode-order path is implemented.
         let keyframe = picture.allSatisfy { (16...20).contains(Int(($0.first! >> 1) & 63)) }
-        if needsKeyframe && !keyframe { return }
+        if !ltrEnabled && needsKeyframe && !keyframe { return }
         needsKeyframe = false
         if !canBufferVideo(bytes: units.reduce(0) { $0 + $1.count }) {
             loseVideoContinuity()
             guard keyframe else { return }
             needsKeyframe = false
         }
-        pendingVideo.append(PendingVideo(ssrc: packet.ssrc, timestamp: packet.timestamp, annexB: Data(), keyframe: keyframe, hevcUnits: units))
+        pendingVideo.append(PendingVideo(ssrc: packet.ssrc, timestamp: packet.timestamp, annexB: Data(), keyframe: keyframe, hevcUnits: ltrEnabled ? state.referenceParameters + units.filter { !(32...34).contains(Int(($0.first! >> 1) & 63)) } : units, don: state.hevcDepacketizer.lastCompletedDON))
         try drain()
     }
 
@@ -226,6 +251,7 @@ extension HighPerformancePlayback: HighPerformanceMediaOutput {}
 
     /// Fresh session only; the SRTP receiver must also be replaced with freshly negotiated keys.
     func reset() {
+        referenceGuard.reset()
         output.reset(); clock.reset(); videos.removeAll(); pendingVideo.removeAll(); pendingAudio.removeAll()
         selectedVideo = nil; selectedAudio = nil; needsKeyframe = true; isPlaying = false
         audioLateDrops = 0; audioPrerollDrops = 0; audioBackpressureEvents = 0; receivedAudioPackets = 0
@@ -280,7 +306,37 @@ extension HighPerformancePlayback: HighPerformanceMediaOutput {}
                     let dictionary = unsafeBitCast(CFArrayGetValueAtIndex(attachments, 0), to: CFMutableDictionary.self)
                     CFDictionarySetValue(dictionary, Unmanaged.passUnretained(kCMSampleAttachmentKey_DoNotDisplay).toOpaque(), Unmanaged.passUnretained(kCFBooleanTrue).toOpaque())
                 }
-                do { try output.enqueueVideo(sample) }
+                do {
+                    if ltrEnabled, let units = video.hevcUnits {
+                        guard let don = video.don else { throw Failure.unsupportedStream }
+                        let prepared = PreparedPicture()
+                        try output.enqueueVideo(sample, prepare: { [weak self] in
+                            guard let self else { return false }
+                            do { prepared.picture = try self.referenceGuard.prepare(units); return true }
+                            catch {
+                                #if DEBUG
+                                self.diagnosticLTRRejected += 1
+                                if self.diagnosticLTRRejected <= 10 || self.diagnosticLTRRejected % 100 == 0 {
+                                    VNCControlDiagnostics.logger.notice("HP LTR reference rejection count=\(self.diagnosticLTRRejected) reason=\(String(describing: error), privacy: .public)")
+                                }
+                                #endif
+                                self.onNeedsKeyframe?(); return false
+                            }
+                        }, decodeCompletion: { [weak self] successful in
+                            guard let self, let picture = prepared.picture else { return }
+                            if successful, self.referenceGuard.decoded(picture) {
+                                #if DEBUG
+                                self.diagnosticLTRDecoded += 1
+                                if self.diagnosticLTRDecoded <= 10 || self.diagnosticLTRDecoded % 120 == 0 {
+                                    VNCControlDiagnostics.logger.notice("HP LTR native decoded count=\(self.diagnosticLTRDecoded) don=\(don)")
+                                }
+                                #endif
+                                self.onCleanHEVCFrame?(don)
+                            }
+                            else { self.referenceGuard.reset(); self.onNeedsKeyframe?() }
+                        })
+                    } else { try output.enqueueVideo(sample) }
+                }
                 catch { loseVideoContinuity(); throw error }
             }
             pendingVideo.removeFirst()

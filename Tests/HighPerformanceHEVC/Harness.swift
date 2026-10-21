@@ -2,6 +2,8 @@ import Foundation
 import CoreMedia
 @MainActor final class HEVCSink: HighPerformanceMediaOutput {
     var presentationSeconds: Double = 0
+    var decodes: [(@MainActor @Sendable () -> Bool, @MainActor @Sendable (Bool) -> Void)] = []
+    func enqueueVideo(_ sample: CMSampleBuffer, prepare: @escaping @MainActor @Sendable () -> Bool, decodeCompletion: @escaping @MainActor @Sendable (Bool) -> Void) throws { decodes.append((prepare, decodeCompletion)) }
     var starts = 0; var video = 0
     func start(at senderSeconds: Double, playoutDelay: Double) throws { starts += 1 }
     func enqueueVideo(_ sample: CMSampleBuffer) throws { precondition(CMFormatDescriptionGetMediaSubType(CMSampleBufferGetFormatDescription(sample)!) == kCMVideoCodecType_HEVC); video += 1 }
@@ -91,6 +93,31 @@ import CoreMedia
     precondition(sink.video == 1 && sink.starts == 1)
     do { try pipeline.consumeVideo(packet(2)); fatalError("multi-SSRC silently accepted") } catch {}
     pipeline.reset(); precondition(!pipeline.isPlaying)
+    let feedbackSink = HEVCSink()
+    let feedbackPipeline = try HighPerformanceMediaPipeline(output: feedbackSink, videoPayloadType: 100, videoCodec: .hevc)
+    try feedbackPipeline.configureLTR(enabled: true)
+    var acknowledgements: [UInt16] = []
+    feedbackPipeline.onCleanHEVCFrame = { acknowledgements.append($0) }
+    var configWire = Data([0x80, 228, 0, 0, 0, 0, 0, 0, 0, 0, 0, 99, 96, 1, 0, 8])
+    for unit in units where (32...34).contains(Int((unit.first! >> 1) & 63)) {
+        configWire.append(contentsOf: [UInt8(unit.count >> 8), UInt8(unit.count & 255)]); configWire.append(unit)
+    }
+    try feedbackPipeline.consumeVideo(HighPerformanceRTPPacket(configWire))
+    var feedbackWire = Data([0x80, 228, 0, 1, 0, 0, 0, 1, 0, 0, 0, 99])
+    feedbackWire.append(ap)
+    try feedbackPipeline.consumeVideo(HighPerformanceRTPPacket(feedbackWire))
+    try feedbackPipeline.observe([HighPerformanceSenderReport(ssrc: 99, ntpSeconds: 1, ntpFraction: 0, rtpTimestamp: 0)], clockRate: 90000)
+    precondition(acknowledgements.isEmpty && feedbackSink.decodes.count == 1, "enqueue must not ACK")
+    let firstDecode = feedbackSink.decodes.removeFirst()
+    precondition(firstDecode.0(), "fixture references should validate")
+    firstDecode.1(false)
+    precondition(acknowledgements.isEmpty, "failed native output must not ACK")
+    feedbackWire[3] = 2; feedbackWire[7] = 2
+    try feedbackPipeline.consumeVideo(HighPerformanceRTPPacket(feedbackWire))
+    let successfulDecode = feedbackSink.decodes.removeFirst()
+    precondition(successfulDecode.0())
+    successfulDecode.1(true)
+    precondition(acknowledgements == [9], "ACK must preserve exact AU DON only after validated decode")
     print("HEVC single/AP/FU, wrap/loss/malformed/DON, native format and single-SSRC pipeline passed")
  }
 }

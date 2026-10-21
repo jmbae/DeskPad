@@ -175,6 +175,7 @@ final class HighPerformanceSampleFactory {
     let videoLayer = AVSampleBufferDisplayLayer()
     private let audioRenderer = AVSampleBufferAudioRenderer()
     private let synchronizer = AVSampleBufferRenderSynchronizer()
+    private var nativeVideoDecoder: HighPerformanceNativeVideoDecoder?
 
     #if DEBUG
     private var diagnosticPresentationPolls = 0
@@ -223,6 +224,21 @@ final class HighPerformanceSampleFactory {
         videoLayer.sampleBufferRenderer.enqueue(sample)
     }
 
+    /// The caller must independently validate reference dependencies before ACK.
+    /// Success means native decode produced an image and the display accepted it.
+    func enqueueVideo(_ sample: CMSampleBuffer, prepare: @escaping @MainActor @Sendable () -> Bool = { true }, decodeCompletion: @escaping @MainActor @Sendable (Bool) -> Void) throws {
+        if nativeVideoDecoder == nil { nativeVideoDecoder = HighPerformanceNativeVideoDecoder() }
+        try nativeVideoDecoder!.enqueue(sample, prepare: prepare) { [weak self] result in
+            guard let self else { return }
+            switch result {
+            case .success(let decoded):
+                do { try self.enqueueVideo(decoded.sample); decodeCompletion(true) }
+                catch { decodeCompletion(false) }
+            case .failure: decodeCompletion(false)
+            }
+        }
+    }
+
     func enqueueAudio(_ sample: CMSampleBuffer) throws {
         guard audioRenderer.status != .failed else { throw HighPerformancePlaybackError.rendererFailed }
         guard audioRenderer.isReadyForMoreMediaData else { throw HighPerformancePlaybackError.backpressure }
@@ -233,6 +249,7 @@ final class HighPerformanceSampleFactory {
     }
 
     func reset() {
+        nativeVideoDecoder?.reset()
         synchronizer.setRate(0, time: .zero)
         videoLayer.sampleBufferRenderer.flush(removingDisplayedImage: true)
         audioRenderer.flush()
