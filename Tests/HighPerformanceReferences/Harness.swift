@@ -48,6 +48,9 @@ func frame(_ poc:Int, idr:Bool=false, delta:Int?=nil, long:Int?=nil) -> Data {
   do { _=try guarder.prepare([frame(5,long:1)]);fatalError("retired DPB reference accepted") } catch AppleHPHEVCReferenceGuard.Failure.missingReference {}
   let next=try guarder.prepare([frame(5,delta:1)]);precondition(guarder.decoded(next))
   guarder.reset();precondition(!guarder.decoded(next))
+  let fresh = try guarder.prepare([sps(),pps(),frame(0,idr:true)])
+  precondition(!guarder.decoded(idr), "old decode callback cannot cross a reset")
+  precondition(guarder.decoded(fresh))
   do { _=try guarder.prepare([Data([66,1,0])]);fatalError("truncated SPS accepted") } catch {}
   // Genuine encoded stream validates that the bit parser matches encoder output.
   if CommandLine.arguments.count > 1 {

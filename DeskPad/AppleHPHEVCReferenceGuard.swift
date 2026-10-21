@@ -26,7 +26,11 @@ nonisolated struct AppleHPHEVCReferenceGuard {
     private var previousPOC = 0
     private var epoch = 0
 
-    mutating func reset() { self = Self() }
+    mutating func reset() {
+        let nextEpoch = epoch + 1
+        self = Self()
+        epoch = nextEpoch
+    }
     /// Retain clean references after loss: an LTR recovery picture can still use them.
     mutating func prepare(_ units: [Data]) throws -> Picture {
         guard units.count <= 256 else { throw Failure.malformed }
