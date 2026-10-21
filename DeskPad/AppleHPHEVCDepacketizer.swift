@@ -26,9 +26,19 @@ struct AppleHPHEVCDepacketizer {
     private var completed = false
     #if DEBUG
     private var diagnosticAPCount = 0
+    private var diagnosticFUProbe = AppleHPFUDONProbe()
+    private var diagnosticFUReports = 0
     #endif
 
     mutating func append(sequence: UInt16, timestamp incoming: UInt32, marker: Bool, payload: Data) throws -> [Data]? {
+        #if DEBUG
+        if let summary = diagnosticFUProbe.observe(sequence: sequence, timestamp: incoming, payload: payload) {
+            diagnosticFUReports += 1
+            if diagnosticFUReports <= 12 || diagnosticFUReports % 100 == 0 {
+                VNCControlDiagnostics.logger.notice("HP FU candidate report=\(self.diagnosticFUReports) fragments=\(summary.fragments) consistent=\(summary.consistent) contiguous=\(summary.contiguous) nalType=\(summary.nalType)")
+            }
+        }
+        #endif
         lastCompletedDON = nil
         if timestamp != incoming {
             accessUnitDON = nil
