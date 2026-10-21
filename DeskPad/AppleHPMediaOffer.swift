@@ -21,12 +21,13 @@ struct AppleHPMediaOffer {
     let videoSSRC: UInt32
     let audioSSRC: UInt32
 
-    static func make(videoProfile: VideoProfile = .h264SinglePicture, enableLTR: Bool = false) throws -> Self {
+    static func make(videoProfile: VideoProfile = .h264SinglePicture, enableLTR: Bool = false, nativeCodecBanks: Bool = false) throws -> Self {
         guard !enableLTR || videoProfile == .hevcSinglePicture else { throw Failure.unsupportedLTR }
+        guard !nativeCodecBanks || (enableLTR && videoProfile == .hevcSinglePicture) else { throw Failure.unsupportedLTR }
         let video = try makeKeys(), audio = try makeKeys()
         let videoSSRC = try randomSSRC(), audioSSRC = try randomSSRC()
-        let videoOffer = try plist(video: true, ssrc: videoSSRC, profile: videoProfile, enableLTR: enableLTR)
-        let audioOffer = try plist(video: false, ssrc: audioSSRC, profile: videoProfile, enableLTR: enableLTR)
+        let videoOffer = try plist(video: true, ssrc: videoSSRC, profile: videoProfile, enableLTR: enableLTR, nativeCodecBanks: nativeCodecBanks)
+        let audioOffer = try plist(video: false, ssrc: audioSSRC, profile: videoProfile, enableLTR: enableLTR, nativeCodecBanks: nativeCodecBanks)
         let bodySize = 216 + audioOffer.count + videoOffer.count
         guard bodySize <= Int(UInt16.max) else { throw Failure.oversizedOffer }
         var header = Data(repeating: 0, count: 36)
@@ -48,7 +49,7 @@ struct AppleHPMediaOffer {
         return Self(ltrEnabled: enableLTR, message: message, videoKeys: video, audioKeys: audio, videoSSRC: videoSSRC, audioSSRC: audioSSRC)
     }
 
-    private static func plist(video: Bool, ssrc: UInt32, profile: VideoProfile, enableLTR: Bool) throws -> Data {
+    private static func plist(video: Bool, ssrc: UInt32, profile: VideoProfile, enableLTR: Bool, nativeCodecBanks: Bool) throws -> Data {
         var endpoint = Proto()
         endpoint.number(1, 0); endpoint.number(2, 1)
         endpoint.string(3, "DeskPad"); endpoint.string(4, "1.1")
@@ -57,14 +58,14 @@ struct AppleHPMediaOffer {
             "avcMediaStreamNegotiatorMode": video ? 7 : 8,
             "avcMediaStreamOptionRemoteEndpointInfo": endpoint.data,
             "avcMediaStreamOptionCallID": UUID().uuidString,
-            "avcMediaStreamNegotiatorMediaBlob": try compressed(mediaDescription(video: video, ssrc: ssrc, profile: profile, enableLTR: enableLTR))
+            "avcMediaStreamNegotiatorMediaBlob": try compressed(mediaDescription(video: video, ssrc: ssrc, profile: profile, enableLTR: enableLTR, nativeCodecBanks: nativeCodecBanks))
         ]
         let result = try PropertyListSerialization.data(fromPropertyList: dictionary, format: .binary, options: 0)
         guard result.count < 16_384 else { throw Failure.oversizedOffer }
         return result
     }
 
-    private static func mediaDescription(video: Bool, ssrc: UInt32, profile: VideoProfile, enableLTR: Bool) -> Data {
+    private static func mediaDescription(video: Bool, ssrc: UInt32, profile: VideoProfile, enableLTR: Bool, nativeCodecBanks: Bool) -> Data {
         var description = Proto()
         description.number(1, UInt64(ssrc))
         // VideoSettings field 2 enables RTCP feedback (including NACK). It is
@@ -72,6 +73,23 @@ struct AppleHPMediaOffer {
         // Audio uses a different description schema; preserve its field 2.
         description.number(2, video ? 1 : 0)
         if video {
+            // Opt-in interoperability experiment matching the native bank order.
+            // The caller must still reject an answer selecting unsupported AVC.
+            // Only bank 123 carries the native LTR capability token; bank 100's
+            // parameter string remains unchanged.
+            if nativeCodecBanks {
+                var alternate = Proto()
+                alternate.number(1, 123)
+                for variant: UInt64 in [1, 2, 1, 2] {
+                    var resolution = Proto()
+                    resolution.number(1, 1); resolution.number(2, variant)
+                    resolution.number(3, 50115); resolution.number(4, 0)
+                    alternate.bytes(2, resolution.data)
+                }
+                alternate.string(3, "FLS;MS:-1;LF:-1;LTR;CABAC;POS:0;EOD:1;HTS:2;RR:3;AR:16/9,5/8;XR:16/9,5/8;")
+                alternate.number(4, 1)
+                description.bytes(3, alternate.data)
+            }
             var codec = Proto()
             // These are observed output mappings, not names inferred from codec
             // parameter strings: bank 123 yields AVC; bank 100 yields HEVC.

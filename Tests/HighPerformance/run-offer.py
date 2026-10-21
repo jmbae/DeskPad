@@ -27,7 +27,7 @@ def decode(data):
         fields.setdefault(field, []).append(value)
     assert pos == len(data)
     return fields
-for profile, expected_type, variants, selector in [(0, 123, 4, 1), (1, 100, 2, 14), (2, 100, 2, 14)]:
+for profile, expected_type, variants, selector in [(0, 123, 4, 1), (1, 100, 2, 14), (2, 100, 2, 14), (3, 100, 2, 14)]:
     profile_lines = lines[profile*3:profile*3+3]
     packet = base64.b64decode(profile_lines[0])
     assert packet[:2] == b'\x1c\0'
@@ -49,9 +49,13 @@ for profile, expected_type, variants, selector in [(0, 123, 4, 1), (1, 100, 2, 1
         assert desc[1] == [ssrc]
         if video:
             assert desc[2] == [1], "video RTCP feedback must be negotiated for NACK recovery"
-            assert desc[6] == [1] and desc[7] == [1 if profile == 2 else 0]
-            assert len(desc[3]) == 1
-            codec = decode(desc[3][0])
+            assert desc[6] == [1] and desc[7] == [1 if profile >= 2 else 0]
+            assert len(desc[3]) == (2 if profile == 3 else 1)
+            if profile == 3:
+                alternate = decode(desc[3][0])
+                assert alternate[1] == [123] and alternate[4] == [1]
+                assert len(alternate[2]) == 4 and b'LTR;' in alternate[3][0]
+            codec = decode(desc[3][-1])
             assert codec[1] == [expected_type] and len(codec[2]) == variants and codec[4] == [selector] and b'LTR;' not in codec[3][0]
         else:
             assert desc[2] == [0] and desc[4] == [24191]

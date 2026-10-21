@@ -21,5 +21,13 @@ import Foundation
         print(ltr.message.base64EncodedString())
         print(ltr.audioSSRC)
         print(ltr.videoSSRC)
+        let dual = try AppleHPMediaOffer.make(videoProfile: .hevcSinglePicture, enableLTR: true, nativeCodecBanks: true)
+        print(dual.message.base64EncodedString())
+        print(dual.audioSSRC)
+        print(dual.videoSSRC)
+        do {
+            _ = try AppleHPMediaOffer.make(videoProfile: .hevcSinglePicture, nativeCodecBanks: true)
+            preconditionFailure("native banks require explicit LTR")
+        } catch AppleHPMediaOffer.Failure.unsupportedLTR {}
     }
 }
