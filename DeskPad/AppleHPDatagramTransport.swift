@@ -42,6 +42,7 @@ actor AppleHPDatagramTransport {
     private var videoWorker: AppleHPVideoDeliveryQueue<HighPerformanceRTPPacket>?
     private var nackCount = 0
     private var receptionReport = AppleHPReceptionReport()
+    private var audioReceptionReport = AppleHPReceptionReport(clockRate: 48_000)
     private var reportTicks = 0
     private var rejectionCounts: [String: Int] = [:]
 
@@ -109,6 +110,13 @@ actor AppleHPDatagramTransport {
             let timestamp = UInt32(truncatingIfNeeded: UInt64(ProcessInfo.processInfo.systemUptime * 48_000))
             let packet = try heartbeat.protect(payload: Data([0, 0x68, 0x34, 0]), payloadType: 101, timestamp: timestamp)
             sockets[0].send(packet)
+            if let remoteAudioSSRC {
+                // Audio has its own RTP clock, SR timing, SSRC and SRTCP key.
+                // Report authenticated arrivals before local reordering/decoding
+                // so concealment or local playback policy cannot hide wire loss.
+                let rr = audioReceptionReport.receiverReport(sender: audioSSRC, media: remoteAudioSSRC, now: ProcessInfo.processInfo.systemUptime)
+                sockets[0].send(try audioFeedback.protect(rr))
+            }
             if let remoteVideoSSRC {
                 var rr = receptionReport.receiverReport(sender: videoSSRC, media: remoteVideoSSRC, now: ProcessInfo.processInfo.systemUptime)
                 reportTicks += 1
@@ -307,6 +315,8 @@ actor AppleHPDatagramTransport {
                     }
                     if report.ssrc == remoteVideoSSRC {
                         receptionReport.observe(report, now: ProcessInfo.processInfo.systemUptime)
+                    } else if report.ssrc == remoteAudioSSRC {
+                        audioReceptionReport.observe(report, now: ProcessInfo.processInfo.systemUptime)
                     }
                     try await pipeline.observe([report], clockRate: report.ssrc == remoteAudioSSRC ? 48000 : 90000)
                 }
@@ -323,6 +333,7 @@ actor AppleHPDatagramTransport {
                     throw HighPerformanceMediaError.malformedPacket
                 }
                 if stream == 0 {
+                    audioReceptionReport.observe(packet, now: ProcessInfo.processInfo.systemUptime)
                     await deliverAudio(audioReorder.insert(packet, now: ProcessInfo.processInfo.systemUptime))
                 } else {
                     receptionReport.observe(packet, now: ProcessInfo.processInfo.systemUptime)

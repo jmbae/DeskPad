@@ -1,7 +1,12 @@
 import Foundation
 
-/// One authenticated video SSRC. All durations use the receiver's monotonic clock.
+/// One authenticated media SSRC. All durations use the receiver's monotonic clock.
 nonisolated struct AppleHPReceptionReport {
+    private let clockRate: Double
+    init(clockRate: Double = 90_000) {
+        precondition(clockRate.isFinite && clockRate > 0 && clockRate <= 1_000_000_000)
+        self.clockRate = clockRate
+    }
     private var base: Int64?
     private var highest: Int64 = 0
     private var received: Int64 = 0
@@ -22,7 +27,7 @@ nonisolated struct AppleHPReceptionReport {
         received += 1
         if let previousArrival {
             let timestampDelta = Double(Int32(bitPattern: packet.timestamp &- previousTimestamp))
-            let difference = abs((now - previousArrival) * 90_000 - timestampDelta)
+            let difference = abs((now - previousArrival) * clockRate - timestampDelta)
             jitter += (difference - jitter) / 16
         }
         previousArrival = now; previousTimestamp = packet.timestamp

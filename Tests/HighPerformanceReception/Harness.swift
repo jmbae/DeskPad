@@ -26,6 +26,29 @@ import Foundation
     jitter.observe(try packet(1,0),now:0)
     jitter.observe(try packet(2,900),now:0.02)
     precondition(word(jitter.receiverReport(sender:1,media:2,now:0.02),20) == 56)
+    var audioReport = AppleHPReceptionReport(clockRate: 48_000)
+    audioReport.observe(try packet(100,0), now: 1)
+    audioReport.observe(try packet(102,960), now: 1.03)
+    audioReport.observe(HighPerformanceSenderReport(ssrc: 77, ntpSeconds: 0x11223344, ntpFraction: 0x55667788, rtpTimestamp: 960), now: 1.03)
+    let audioRR = audioReport.receiverReport(sender: 88, media: 77, now: 1.53)
+    precondition(word(audioRR,4) == 88 && word(audioRR,8) == 77, "audio report must name audio SSRCs")
+    precondition(word(audioRR,12) == 0x55000001, "one of three audio packets was missing")
+    precondition(word(audioRR,20) == 30, "audio jitter must use 48k rather than video 90k")
+    precondition(word(audioRR,24) == 0x33445566 && word(audioRR,28) == 32768, "audio SR timing must remain independent of video")
+    let audioKey = Data((0..<46).map { UInt8($0) })
+    let audioFeedback = try HighPerformanceSRTCPSender(masterKeyBlob: audioKey, ssrc: 88)
+    var peerAudio = try HighPerformanceSRTCPReceiver(masterKeyBlob: audioKey)
+    let protectedRR = try audioFeedback.protect(audioRR)
+    let authenticatedRR = try peerAudio.receive(protectedRR)
+    precondition(authenticatedRR == audioRR)
+    var wrongVideoKey = try HighPerformanceSRTCPReceiver(masterKeyBlob: Data((0..<46).map { UInt8($0 + 50) }))
+    do { _ = try wrongVideoKey.receive(protectedRR); fatalError("audio feedback authenticated with video key") }
+    catch HighPerformanceSRTPError.authenticationFailed {}
+    // Recovering an authenticated late AU reduces network loss, irrespective of
+    // whether its playout deadline has already passed.
+    audioReport.observe(try packet(101,480), now: 1.54)
+    precondition(word(audioReport.receiverReport(sender: 88, media: 77, now: 1.54),12) == 0)
+    print("48k audio RR loss, independent SSRC/LSR/DLSR, late repair and jitter passed")
     print("RR loss fraction, rollover, late repair, LSR/DLSR, jitter and compound SR vectors passed")
  }
 }
