@@ -246,6 +246,10 @@ actor AppleHPDatagramTransport {
                 counts[stream] += 1
                 if counts[stream] == 1 || counts[stream] % 500 == 0 {
                     #if DEBUG
+                    if stream == 1 {
+                        let repair = videoReorder.statistics
+                        VNCControlDiagnostics.logger.notice("HP repair recovered=\(repair.repairedHeads) expired=\(repair.deadlineExpirations) capacity=\(repair.capacityFlushes) late=\(repair.latePackets) peak=\(repair.peakPackets) maxRepairMs=\(repair.longestRepairMilliseconds) queued=\(self.videoReorder.bufferedPacketCount)")
+                    }
                     if stream == 1, let stats = await videoWorker?.statistics {
                         VNCControlDiagnostics.logger.notice("HP video delivery queued=\(stats.queuedPackets) bytes=\(stats.queuedBytes) peak=\(stats.peakPackets) peakBytes=\(stats.peakBytes)")
                     }

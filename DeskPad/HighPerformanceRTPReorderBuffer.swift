@@ -13,6 +13,17 @@ nonisolated struct HighPerformanceRTPReorderBuffer {
     private var gapStarted: Double?
     private var lastRequest: Double?
     private var requests = 0
+    private var gapSequence: UInt16?
+    private var missingSince: [UInt16: Double] = [:]
+    struct Statistics {
+        var repairedHeads = 0
+        var deadlineExpirations = 0
+        var capacityFlushes = 0
+        var latePackets = 0
+        var peakPackets = 0
+        var longestRepairMilliseconds = 0
+    }
+    private(set) var statistics = Statistics()
     var hasPending: Bool { !pending.isEmpty }
     var bufferedPacketCount: Int { pending.count }
     var bufferedByteCount: Int { pendingBytes }
@@ -21,17 +32,33 @@ nonisolated struct HighPerformanceRTPReorderBuffer {
         guard now.isFinite else { return Output() }
         if expected == nil { expected = packet.sequenceNumber }
         let distance = Int16(bitPattern: packet.sequenceNumber &- expected!)
-        guard distance >= 0, pending[packet.sequenceNumber] == nil else { return Output() }
+        guard distance >= 0 else { statistics.latePackets += 1; return Output() }
+        guard pending[packet.sequenceNumber] == nil else { return Output() }
         var output = Output()
+        // The missing head frees queued memory; never reject it merely because
+        // the repair queue has reached its limit.
+        if distance == 0 {
+            if let started = missingSince.removeValue(forKey: packet.sequenceNumber) {
+                statistics.repairedHeads += 1
+                statistics.longestRepairMilliseconds = max(statistics.longestRepairMilliseconds, Int(max(0, now - started) * 1000))
+            }
+            output.packets.append(packet)
+            expected = packet.sequenceNumber &+ 1
+            releaseContiguous(into: &output)
+            repair(now: now, into: &output)
+            return output
+        }
         if distance > 1024 || pending.count >= 512 || pendingBytes + packet.payload.count > 2 * 1024 * 1024 {
             // A bounded repair cannot span this burst. Release existing packets
             // with visible sequence gaps, allowing the decoder to request an IDR.
+            statistics.capacityFlushes += 1
             releaseAll(into: &output)
             if let expected, Int16(bitPattern: packet.sequenceNumber &- expected) < 0 { return output }
             expected = packet.sequenceNumber
         }
         pending[packet.sequenceNumber] = packet
         pendingBytes += packet.payload.count
+        statistics.peakPackets = max(statistics.peakPackets, pending.count)
         releaseContiguous(into: &output)
         repair(now: now, into: &output)
         return output
@@ -51,7 +78,7 @@ nonisolated struct HighPerformanceRTPReorderBuffer {
             output.packets.append(packet)
             self.expected = expected &+ 1
         }
-        if pending.isEmpty { clearGap() }
+        if pending.isEmpty { clearGap(); missingSince.removeAll(keepingCapacity: true) }
     }
     private mutating func releaseAll(into output: inout Output) {
         guard let expected else { return }
@@ -60,23 +87,37 @@ nonisolated struct HighPerformanceRTPReorderBuffer {
             output.packets.append(pending[sequence]!)
             self.expected = sequence &+ 1
         }
-        pending.removeAll(keepingCapacity: true); pendingBytes = 0; clearGap()
+        pending.removeAll(keepingCapacity: true); pendingBytes = 0; clearGap(); missingSince.removeAll(keepingCapacity: true)
     }
-    private mutating func clearGap() { gapStarted = nil; lastRequest = nil; requests = 0 }
+    private mutating func clearGap() { gapStarted = nil; gapSequence = nil; lastRequest = nil; requests = 0 }
     private mutating func repair(now: Double, into output: inout Output) {
         guard !pending.isEmpty, let expected else { return }
-        if gapStarted == nil { gapStarted = now }
+        let farthest = pending.keys.map { Int($0 &- expected) }.max() ?? 0
+        guard farthest <= 1024 else { return }
+        var missing: [UInt16] = []
+        for offset in 0..<farthest {
+            let sequence = expected &+ UInt16(offset)
+            if pending[sequence] == nil {
+                missing.append(sequence)
+                if missingSince[sequence] == nil { missingSince[sequence] = now }
+            }
+        }
+        let currentMissing = Set(missing)
+        missingSince = missingSince.filter { currentMissing.contains($0.key) }
+        if gapSequence != expected {
+            clearGap()
+            gapSequence = expected
+            // Preserve the first observation of an existing hole; progress must
+            // not extend its deadline, but a new hole gets its own repair budget.
+            gapStarted = missingSince[expected] ?? now
+        }
         if now - gapStarted! >= 0.06 {
+            statistics.deadlineExpirations += 1
             releaseAll(into: &output)
             return
         }
         guard requests < 2, lastRequest == nil || now - lastRequest! >= 0.02 else { return }
-        let farthest = pending.keys.map { Int($0 &- expected) }.max() ?? 0
-        guard farthest <= 1024 else { return }
-        for offset in 0..<farthest {
-            let sequence = expected &+ UInt16(offset)
-            if pending[sequence] == nil { output.missing.append(sequence) }
-        }
+        output.missing = missing
         // At most1024 requested sequence numbers, compressed into PID/BLP pairs.
         requests += 1; lastRequest = now
     }
