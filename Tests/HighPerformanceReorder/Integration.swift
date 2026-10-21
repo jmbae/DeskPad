@@ -29,6 +29,34 @@ import Foundation
     do { _ = try receiver.receive(forged); fatalError("forged retransmit accepted") } catch HighPerformanceSRTPError.authenticationFailed {}
     let next = reorder.insert(try receiver.receive(encrypted[270]),now:0.03)
     precondition(next.packets.count == 1, "forged packet advanced replay/reorder state")
+    // Audio feedback carries its own key/SSRC and preserves the original 10 ms AU.
+    let audioKey = Data((0..<46).map { UInt8($0 + 50) })
+    let audioSender = try HighPerformanceSRTPSender(masterKeyBlob: audioKey, ssrc: 11, initialSequence: 65535)
+    var audioReceiver = try HighPerformanceSRTPReceiver(masterKeyBlob: audioKey)
+    var audioPackets: [Data] = []
+    for n in 0..<8 { audioPackets.append(try audioSender.protect(payload: Data([UInt8(n), 0x42]), payloadType: 101, timestamp: UInt32(n * 480), marker: true)) }
+    var audioRepair = HighPerformanceRTPReorderBuffer(packetLimit: 32, byteLimit: 65536, forwardLimit: 64)
+    _ = audioRepair.insert(try audioReceiver.receive(audioPackets[0]), now: 0)
+    let audioHole = audioRepair.insert(try audioReceiver.receive(audioPackets[2]), now: 0.02)
+    precondition(audioHole.missing == [0] && audioHole.packets.isEmpty)
+    let audioFeedback = try HighPerformanceSRTCPSender(masterKeyBlob: audioKey, ssrc: 12)
+    var audioFeedbackReceiver = try HighPerformanceSRTCPReceiver(masterKeyBlob: audioKey)
+    let audioNack = HighPerformanceNACK.compound(sender: 12, media: 11, sequences: audioHole.missing)!
+    let decryptedAudioNack = try audioFeedbackReceiver.receive(audioFeedback.protect(audioNack))
+    precondition(decryptedAudioNack == audioNack)
+    let repairedAudio = audioRepair.insert(try audioReceiver.receive(audioPackets[1]), now: 0.04)
+    precondition(repairedAudio.packets.map(\.timestamp) == [480, 960])
+    precondition(repairedAudio.packets.map(\.payload) == [Data([1,0x42]), Data([2,0x42])])
+    precondition(audioRepair.statistics.repairedHeads == 1)
+    let ignored = audioRepair.insert(try audioReceiver.receive(audioPackets[4]), now: 0.05)
+    precondition(ignored.packets.isEmpty && ignored.missing == [2])
+    precondition(audioRepair.flush(now: 0.071).missing == [2])
+    precondition(audioRepair.flush(now: 0.09).missing.isEmpty, "audio retries must be bounded")
+    let expired = audioRepair.flush(now: 0.111)
+    precondition(expired.packets.map(\.timestamp) == [1920] && !audioRepair.hasPending, "unsupported audio NACK must not freeze playback")
+    let tooLate = audioRepair.insert(try audioReceiver.receive(audioPackets[3]), now: 0.12)
+    precondition(tooLate.packets.isEmpty, "expired audio must not be replayed out of time")
+    print("Audio authenticated 10ms AU repair, separate feedback key, bounded unsupported-peer timeout passed")
     print("Authenticated RTP268-packet repair acrossROC, protectedNACK roundtrip, replay+forgery isolation passed")
  }
 }

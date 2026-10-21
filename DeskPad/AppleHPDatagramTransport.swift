@@ -23,6 +23,11 @@ actor AppleHPDatagramTransport {
     private var rejected = [0, 0]
     private var active = true
     private let heartbeat: HighPerformanceSRTPSender
+    private let audioFeedback: HighPerformanceSRTCPSender
+    private let audioSSRC: UInt32
+    private var audioReorder = HighPerformanceRTPReorderBuffer(packetLimit: 32, byteLimit: 65536, forwardLimit: 64)
+    private var audioWorker: AppleHPVideoDeliveryQueue<HighPerformanceRTPPacket>?
+    private var audioNackCount = 0
     private let videoFeedback: HighPerformanceSRTCPSender
     private let videoSSRC: UInt32
     private var heartbeatTask: Task<Void, Never>?
@@ -41,6 +46,8 @@ actor AppleHPDatagramTransport {
         self.pipeline = pipeline; self.onPlaying = onPlaying; self.onFailure = onFailure
         heartbeat = try .init(masterKeyBlob: offer.audioKeys.viewerToServer, ssrc: offer.audioSSRC)
         videoFeedback = try .init(masterKeyBlob: offer.videoKeys.viewerToServer, ssrc: offer.videoSSRC)
+        audioFeedback = try .init(masterKeyBlob: offer.audioKeys.viewerToServer, ssrc: offer.audioSSRC)
+        audioSSRC = offer.audioSSRC
         videoSSRC = offer.videoSSRC
         audio = try .init(masterKeyBlob: offer.audioKeys.serverToViewer)
         video = try .init(masterKeyBlob: offer.videoKeys.serverToViewer)
@@ -151,13 +158,46 @@ actor AppleHPDatagramTransport {
         reorderTask?.cancel(); reorderTask = nil
         if let videoWorker { Task { await videoWorker.close() } }
         videoWorker = nil
+        if let audioWorker { Task { await audioWorker.close() } }
+        audioWorker = nil
+        audioReorder = HighPerformanceRTPReorderBuffer(packetLimit: 32, byteLimit: 65536, forwardLimit: 64)
         videoReorder = HighPerformanceRTPReorderBuffer()
         for socket in sockets { socket.close() }
         sockets.removeAll()
     }
     private func flushVideoReorder() async {
-        guard active, negotiated, videoReorder.hasPending else { return }
-        await deliverVideo(videoReorder.flush(now: ProcessInfo.processInfo.systemUptime))
+        guard active, negotiated else { return }
+        if audioReorder.hasPending { await deliverAudio(audioReorder.flush(now: ProcessInfo.processInfo.systemUptime)) }
+        if active, videoReorder.hasPending { await deliverVideo(videoReorder.flush(now: ProcessInfo.processInfo.systemUptime)) }
+    }
+
+    // Audio uses its negotiated SRTCP key and SSRC. A peer that ignores Generic
+    // NACK costs at most the existing 60 ms repair deadline, never an unbounded wait.
+    private func deliverAudio(_ output: HighPerformanceRTPReorderBuffer.Output) async {
+        guard active else { return }
+        if let remoteAudioSSRC, !output.missing.isEmpty,
+           let nack = HighPerformanceNACK.compound(sender: audioSSRC, media: remoteAudioSSRC, sequences: output.missing) {
+            do { sockets[0].send(try audioFeedback.protect(nack)); audioNackCount += 1 }
+            catch { failMedia(.playbackFailure); return }
+        }
+        if audioWorker == nil {
+            audioWorker = AppleHPVideoDeliveryQueue(packetLimit: 64, byteLimit: 131072) { [weak self] packet in
+                await self?.deliverOneAudio(packet)
+            }
+        }
+        guard let audioWorker, await audioWorker.enqueue(output.packets.map { ($0, $0.payload.count) }) else {
+            if active { failMedia(.playbackFailure) }; return
+        }
+    }
+    private func deliverOneAudio(_ packet: HighPerformanceRTPPacket) async {
+        guard active, !Task.isCancelled else { return }
+        do { try await pipeline.consumeAudioAccessUnit(packet) }
+        catch HighPerformancePlaybackError.backpressure { /* Pipeline retains this AU. */ }
+        catch { failMedia(.playbackFailure); return }
+        if active, !didStart {
+            let playing = await pipeline.isPlaying
+            if active, !didStart, playing { didStart = true; await onPlaying() }
+        }
     }
 
     private func deliverVideo(_ output: HighPerformanceRTPReorderBuffer.Output) async {
@@ -246,11 +286,7 @@ actor AppleHPDatagramTransport {
                     throw HighPerformanceMediaError.malformedPacket
                 }
                 if stream == 0 {
-                    try await pipeline.consumeAudioAccessUnit(packet)
-                    let playing = await pipeline.isPlaying
-                    if active, !didStart, playing {
-                        didStart = true; await onPlaying()
-                    }
+                    await deliverAudio(audioReorder.insert(packet, now: ProcessInfo.processInfo.systemUptime))
                 } else {
                     receptionReport.observe(packet, now: ProcessInfo.processInfo.systemUptime)
                     await deliverVideo(videoReorder.insert(packet, now: ProcessInfo.processInfo.systemUptime))
@@ -258,6 +294,10 @@ actor AppleHPDatagramTransport {
                 counts[stream] += 1
                 if counts[stream] == 1 || counts[stream] % 500 == 0 {
                     #if DEBUG
+                    if stream == 0 {
+                        let repair = audioReorder.statistics
+                        VNCControlDiagnostics.logger.notice("HP audio repair nacks=\(self.audioNackCount) recovered=\(repair.repairedHeads) expired=\(repair.deadlineExpirations) late=\(repair.latePackets) capacity=\(repair.capacityFlushes) pending=\(self.audioReorder.bufferedPacketCount)")
+                    }
                     if stream == 1 {
                         let repair = videoReorder.statistics
                         VNCControlDiagnostics.logger.notice("HP repair recovered=\(repair.repairedHeads) expired=\(repair.deadlineExpirations) capacity=\(repair.capacityFlushes) late=\(repair.latePackets) peak=\(repair.peakPackets) maxRepairMs=\(repair.longestRepairMilliseconds) queued=\(self.videoReorder.bufferedPacketCount)")

@@ -1,11 +1,18 @@
 import Foundation
 
-/// Authenticated video only, one instance per SSRC. Uses monotonic arrival time
+/// Authenticated RTP only, one instance per SSRC. Uses monotonic arrival time
 /// solely for bounded repair deadlines, never as an A/V presentation timestamp.
 nonisolated struct HighPerformanceRTPReorderBuffer {
     struct Output {
         var packets: [HighPerformanceRTPPacket] = []
         var missing: [UInt16] = []
+    }
+    private let packetLimit: Int
+    private let byteLimit: Int
+    private let forwardLimit: Int
+    init(packetLimit: Int = 512, byteLimit: Int = 2 * 1024 * 1024, forwardLimit: Int = 1024) {
+        precondition((1...512).contains(packetLimit) && (1...(2 * 1024 * 1024)).contains(byteLimit) && (1...1024).contains(forwardLimit))
+        self.packetLimit = packetLimit; self.byteLimit = byteLimit; self.forwardLimit = forwardLimit
     }
     private var expected: UInt16?
     private var pending: [UInt16: HighPerformanceRTPPacket] = [:]
@@ -48,7 +55,7 @@ nonisolated struct HighPerformanceRTPReorderBuffer {
             repair(now: now, into: &output)
             return output
         }
-        if distance > 1024 || pending.count >= 512 || pendingBytes + packet.payload.count > 2 * 1024 * 1024 {
+        if distance > forwardLimit || pending.count >= packetLimit || pendingBytes + packet.payload.count > byteLimit {
             // A bounded repair cannot span this burst. Release existing packets
             // with visible sequence gaps, allowing the decoder to request an IDR.
             statistics.capacityFlushes += 1
@@ -93,7 +100,7 @@ nonisolated struct HighPerformanceRTPReorderBuffer {
     private mutating func repair(now: Double, into output: inout Output) {
         guard !pending.isEmpty, let expected else { return }
         let farthest = pending.keys.map { Int($0 &- expected) }.max() ?? 0
-        guard farthest <= 1024 else { return }
+        guard farthest <= forwardLimit else { return }
         var missing: [UInt16] = []
         for offset in 0..<farthest {
             let sequence = expected &+ UInt16(offset)
