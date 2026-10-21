@@ -25,5 +25,5 @@ with tempfile.TemporaryDirectory(prefix='hp-answer-') as temp:
  for name, codecs in [('dual',(123,100)),('duplicate',(100,100)),('unknown',(100,99)),('excess',(123,100,123)),('empty',())]:
   video=stream(True,codecs)
   (path/name).write_bytes(struct.pack('>HHHIHHHI',18+len(a)+len(video),2,2,1,len(a),len(video),0,0)+a+video)
- subprocess.run(['swiftc','-parse-as-library',str(root/'DeskPad/AppleHPMediaOffer.swift'),str(root/'DeskPad/AppleHPMediaAnswer.swift'),str(root/'DeskPad/AppleHPControlParser.swift'),str(root/'Tests/HighPerformanceAnswer/Harness.swift'),'-o',str(path/'tests')],check=True)
+ subprocess.run(['swiftc','-parse-as-library',str(root/'DeskPad/HighPerformance/AppleHPMediaOffer.swift'),str(root/'DeskPad/AppleHPMediaAnswer.swift'),str(root/'DeskPad/AppleHPControlParser.swift'),str(root/'Tests/HighPerformanceAnswer/Harness.swift'),'-o',str(path/'tests')],check=True)
  subprocess.run([str(path/'tests'),str(path/'fixture')],check=True)

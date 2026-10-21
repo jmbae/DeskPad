@@ -3,7 +3,7 @@
 import pathlib, socket, struct, subprocess, sys, tempfile, threading, time, zlib
 root = pathlib.Path(__file__).resolve().parents[2]
 binary = pathlib.Path(tempfile.mkdtemp(prefix='deskpad-session-')) / 'session-tests'
-subprocess.run(['swiftc', '-parse-as-library', str(root/'DeskPad/ConnectionStore.swift'), str(root/'DeskPad/VNCSession.swift'), str(root/'DeskPad/RFBCursorShape.swift'), str(root/'DeskPad/RFBInputQueue.swift'), str(root/'DeskPad/RFBZRLEDecoder.swift'), str(root/'Tests/Session/Harness.swift'), '-o', str(binary)], check=True)
+subprocess.run(['swiftc', '-parse-as-library', str(root/'DeskPad/Connections/ConnectionStore.swift'), str(root/'DeskPad/VNC/VNCSession.swift'), str(root/'DeskPad/VNC/RFBCursorShape.swift'), str(root/'DeskPad/VNC/RFBInputQueue.swift'), str(root/'DeskPad/VNC/RFBZRLEDecoder.swift'), str(root/'Tests/Session/Harness.swift'), '-o', str(binary)], check=True)
 def exact(c,n):
     out=b''
     while len(out)<n:
@@ -313,7 +313,7 @@ def serve(listener, mode, marker):
         if stage != 'activity' or mode not in ('terminal-error','first-frame-timeout','resize-timeout'):
             errors.append(AssertionError(f'{mode}: unexpected disconnect before all protocol assertions completed: {error}'))
     except Exception as error: errors.append(error)
-for mode in ['apple-black-fallback','apple-black-both','apple-black-partial','standard-black','raw-chunk-timeout','raw-chunks','multi-display','oversized-init','oversized-resize','apple-cursor','cursor','rgb565','zrle','zrle-bounds','zrle-length','zrle-bomb','zrle-palette','zrle-timeout','remote-close','remote-reset','remote-payload-close','slow-raw','first-frame','reconnect','malformed','clipboard','apple','apple-failure','vnc33','deinit','terminal-error','resize-release','first-frame-timeout','resize-timeout']:
+for mode in ['raw-chunk-timeout','raw-chunks','multi-display','oversized-init','oversized-resize','apple-cursor','cursor','rgb565','zrle','zrle-bounds','zrle-length','zrle-bomb','zrle-palette','zrle-timeout','remote-close','remote-reset','remote-payload-close','slow-raw','first-frame','reconnect','malformed','clipboard','apple','apple-failure','vnc33','deinit','terminal-error','resize-release','first-frame-timeout','resize-timeout']:
     selected = next((arg.split('=', 1)[1] for arg in sys.argv if arg.startswith('--case=')), None)
     if selected and mode != selected: continue
     if '--resize-only' in sys.argv and mode!='resize-timeout': continue

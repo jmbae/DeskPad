@@ -7,7 +7,7 @@ enum HighPerformanceSRTPError: Error {
 
 /// AES_256_CM_HMAC_SHA1_80, kdr=0, no MKI. RFC 3711 + RFC 6188.
 /// Use the negotiated server-send (key2) blob for receiving. No key material is logged.
-struct HighPerformanceSRTPKeys {
+nonisolated struct HighPerformanceSRTPKeys {
     let encryption: Data
     let authentication: Data
     let salt: Data
@@ -30,7 +30,7 @@ struct HighPerformanceSRTPKeys {
 
 /// Queue/actor-confined SRTP receiver. Instantiate with fresh negotiated keys on each
 /// new media session. Never reset replay state while reusing a key/SSRC pair.
-struct HighPerformanceSRTPReceiver {
+nonisolated struct HighPerformanceSRTPReceiver {
     private let keys: HighPerformanceSRTPKeys
     private var streams: [UInt32: SRTPReplayWindow] = [:]
     private var acceptedPackets: UInt64 = 0
@@ -91,7 +91,7 @@ struct HighPerformanceSRTPReceiver {
     }
 }
 
-private func srtpHMAC(_ data: Data, key: Data) -> [UInt8] {
+nonisolated private func srtpHMAC(_ data: Data, key: Data) -> [UInt8] {
     var result = [UInt8](repeating: 0, count: Int(CC_SHA1_DIGEST_LENGTH))
     key.withUnsafeBytes { k in data.withUnsafeBytes { d in
         CCHmac(CCHmacAlgorithm(kCCHmacAlgSHA1), k.baseAddress, key.count, d.baseAddress, data.count, &result)
@@ -99,7 +99,7 @@ private func srtpHMAC(_ data: Data, key: Data) -> [UInt8] {
     return result
 }
 
-private func srtpCTR(_ input: Data, key: Data, iv: [UInt8]) throws -> Data {
+nonisolated private func srtpCTR(_ input: Data, key: Data, iv: [UInt8]) throws -> Data {
     guard key.count == 32, iv.count == 16, input.count <= 65535 else { throw HighPerformanceSRTPError.cryptoFailure }
     // AES-ECB encrypts counter blocks only; the packet cipher is CTR, without padding.
     // Batch all counters into one CommonCrypto operation instead of allocating a cipher per block.
@@ -121,7 +121,7 @@ private func srtpCTR(_ input: Data, key: Data, iv: [UInt8]) throws -> Data {
     return Data(zip(input, stream).map { $0 ^ $1 })
 }
 
-private struct SRTPReplayWindow {
+nonisolated private struct SRTPReplayWindow {
     var highest: UInt64
     private var words: [UInt64]
     init(highest: UInt64, wordCount: Int) {
@@ -161,7 +161,7 @@ private struct SRTPReplayWindow {
 
 /// SRTCP counterpart with a separate replay window and key labels 3/4/5.
 /// Returns the authenticated compound RTCP datagram with index/tag removed.
-struct HighPerformanceSRTCPReceiver {
+nonisolated struct HighPerformanceSRTCPReceiver {
     private let keys: HighPerformanceSRTPKeys
     private var streams: [UInt32: SRTPReplayWindow] = [:]
     private var acceptedPackets: UInt64 = 0
@@ -204,7 +204,7 @@ struct HighPerformanceSRTCPReceiver {
 /// Single-stream sender. Create with a fresh client-send 46-byte master key for
 /// each media session. Reference semantics prevent accidental sequence cloning.
 /// Actor/queue-confined; never reuse a key and SSRC after discarding this object.
-final class HighPerformanceSRTPSender {
+nonisolated final class HighPerformanceSRTPSender {
     private let keys: HighPerformanceSRTPKeys
     let ssrc: UInt32
     private var index: UInt64
@@ -242,7 +242,7 @@ final class HighPerformanceSRTPSender {
 /// SRTCP sender with independent control key derivation and monotonic 31-bit
 /// index. The entire compound datagram is authenticated; bytes after the first
 /// eight are encrypted. The caller builds standards-compliant RR/SDES contents.
-final class HighPerformanceSRTCPSender {
+nonisolated final class HighPerformanceSRTCPSender {
     private let keys: HighPerformanceSRTPKeys
     let ssrc: UInt32
     private var index: UInt32
@@ -276,7 +276,7 @@ final class HighPerformanceSRTCPSender {
     }
 }
 
-private func srtpU32(_ value: UInt32) -> [UInt8] {
+nonisolated private func srtpU32(_ value: UInt32) -> [UInt8] {
     [UInt8(truncatingIfNeeded: value >> 24), UInt8(truncatingIfNeeded: value >> 16),
      UInt8(truncatingIfNeeded: value >> 8), UInt8(truncatingIfNeeded: value)]
 }

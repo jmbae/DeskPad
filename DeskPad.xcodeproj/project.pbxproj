@@ -3,7 +3,7 @@
 	archiveVersion = 1;
 	classes = {
 	};
-	objectVersion = 110;
+	objectVersion = 77;
 	objects = {
 
 /* Begin PBXBuildFile section */
@@ -29,15 +29,11 @@
 /* Begin PBXFileSystemSynchronizedRootGroup section */
 		498C46BFB1193686FD45B6CA /* DeskPadTests */ = {
 			isa = PBXFileSystemSynchronizedRootGroup;
-			exceptions = (
-			);
 			path = DeskPadTests;
 			sourceTree = "<group>";
 		};
 		A6C30E5E30860BB300C2075C /* DeskPad */ = {
 			isa = PBXFileSystemSynchronizedRootGroup;
-			exceptions = (
-			);
 			path = DeskPad;
 			sourceTree = "<group>";
 		};
@@ -54,8 +50,10 @@
 		};
 		A6C30E5930860BB300C2075C /* Frameworks */ = {
 			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
 			files = (
 			);
+			runOnlyForDeploymentPostprocessing = 0;
 		};
 /* End PBXFrameworksBuildPhase section */
 
@@ -115,6 +113,8 @@
 				498C46BFB1193686FD45B6CA /* DeskPadTests */,
 			);
 			name = DeskPadTests;
+			packageProductDependencies = (
+			);
 			productName = DeskPadTests;
 			productReference = 3802F2BF6AD308C3E41C3367 /* DeskPadTests.xctest */;
 			productType = "com.apple.product-type.bundle.unit-test";
@@ -135,6 +135,8 @@
 				A6C30E5E30860BB300C2075C /* DeskPad */,
 			);
 			name = DeskPad;
+			packageProductDependencies = (
+			);
 			productName = DeskPad;
 			productReference = A6C30E5C30860BB300C2075C /* DeskPad.app */;
 			productType = "com.apple.product-type.application";
@@ -184,8 +186,10 @@
 		};
 		A6C30E5A30860BB300C2075C /* Resources */ = {
 			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
 			files = (
 			);
+			runOnlyForDeploymentPostprocessing = 0;
 		};
 /* End PBXResourcesBuildPhase section */
 
@@ -199,8 +203,10 @@
 		};
 		A6C30E5830860BB300C2075C /* Sources */ = {
 			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
 			files = (
 			);
+			runOnlyForDeploymentPostprocessing = 0;
 		};
 /* End PBXSourcesBuildPhase section */
 
@@ -292,6 +298,7 @@
 				MTL_FAST_MATH = YES;
 				ONLY_ACTIVE_ARCH = YES;
 				SDKROOT = iphoneos;
+				STRING_CATALOG_GENERATE_SYMBOLS = YES;
 				SWIFT_ACTIVE_COMPILATION_CONDITIONS = "DEBUG $(inherited)";
 				SWIFT_OPTIMIZATION_LEVEL = "-Onone";
 			};
@@ -349,6 +356,7 @@
 				MTL_ENABLE_DEBUG_INFO = NO;
 				MTL_FAST_MATH = YES;
 				SDKROOT = iphoneos;
+				STRING_CATALOG_GENERATE_SYMBOLS = YES;
 				SWIFT_COMPILATION_MODE = wholemodule;
 				VALIDATE_PRODUCT = YES;
 			};
@@ -373,7 +381,7 @@
 					"$(inherited)",
 					"@executable_path/Frameworks",
 				);
-				MARKETING_VERSION = 1.1;
+				MARKETING_VERSION = 1.1.1;
 				PRODUCT_BUNDLE_IDENTIFIER = com.africastart.DeskPad;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				STRING_CATALOG_GENERATE_SYMBOLS = YES;
@@ -405,7 +413,7 @@
 					"$(inherited)",
 					"@executable_path/Frameworks",
 				);
-				MARKETING_VERSION = 1.1;
+				MARKETING_VERSION = 1.1.1;
 				PRODUCT_BUNDLE_IDENTIFIER = com.africastart.DeskPad;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				STRING_CATALOG_GENERATE_SYMBOLS = YES;
@@ -454,6 +462,7 @@
 				A6C30E6730860BB400C2075C /* Debug */,
 				A6C30E6830860BB400C2075C /* Release */,
 			);
+			defaultConfigurationIsVisible = 0;
 			defaultConfigurationName = Release;
 		};
 		A6C30E6930860BB400C2075C /* Build configuration list for PBXNativeTarget "DeskPad" */ = {
@@ -462,6 +471,7 @@
 				A6C30E6A30860BB400C2075C /* Debug */,
 				A6C30E6B30860BB400C2075C /* Release */,
 			);
+			defaultConfigurationIsVisible = 0;
 			defaultConfigurationName = Release;
 		};
 /* End XCConfigurationList section */
