@@ -1,5 +1,8 @@
 import Foundation
 import zlib
+#if DEBUG
+import os
+#endif
 
 /// Version-2 media response carried by encoding 1010. This schema is grounded
 /// in the observed reply; it must not be confused with version-1 announcements.
@@ -25,8 +28,12 @@ struct AppleHPMediaAnswer {
         let b = [UInt8](payload)
         guard b.count >= 20, b.count <= 65537, Int(hpU16(b, 0)) + 2 == b.count else { throw Failure.malformed }
         guard hpU16(b, 2) == 2, hpU16(b, 4) == 2 else { throw Failure.unsupportedVersion }
-        status = hpU32(b, 6)
+        let answerStatus = hpU32(b, 6)
+        status = answerStatus
         let sizes = [Int(hpU16(b, 10)), Int(hpU16(b, 12)), Int(hpU16(b, 14))]
+        #if DEBUG
+        VNCControlDiagnostics.logger.notice("HP answer structure bytes=\(b.count) status=\(answerStatus) audioSize=\(sizes[0]) videoSize=\(sizes[1]) secondVideoSize=\(sizes[2])")
+        #endif
         guard sizes[0] > 0, sizes[1] > 0, sizes.allSatisfy({ $0 <= 32768 }),
               20 + sizes.reduce(0, +) == b.count else { throw Failure.malformed }
         audio = try Self.stream(Data(b[20..<(20 + sizes[0])]), video: false)
@@ -40,7 +47,20 @@ struct AppleHPMediaAnswer {
               let plist = try PropertyListSerialization.propertyList(from: bytes, options: [], format: nil) as? [String: Any],
               plist.count <= 32, let compressed = plist["avcMediaStreamNegotiatorMediaBlob"] as? Data else { throw Failure.malformed }
         let fields = try AppleHPProtoValue.parse(inflate(compressed))
+        #if DEBUG
+        Self.logShape(fields, stage: video ? "video-root" : "audio-root")
+        #endif
         let description = try AppleHPProtoValue.parse(AppleHPProtoValue.oneBytes(fields, video ? 5 : 3))
+        #if DEBUG
+        Self.logShape(description, stage: video ? "video-description" : "audio-description")
+        if video {
+            for (index, value) in (description[3] ?? []).prefix(8).enumerated() {
+                if case .bytes(let codec) = value, let parsed = try? AppleHPProtoValue.parse(codec) {
+                    Self.logShape(parsed, stage: "video-codec-\(index)")
+                }
+            }
+        }
+        #endif
         let ssrc = try AppleHPProtoValue.oneNumber(description, 1)
         guard ssrc > 0, ssrc <= UInt32.max else { throw Failure.malformed }
         var codec: UInt8?, width: Int?, height: Int?
@@ -56,6 +76,23 @@ struct AppleHPMediaAnswer {
         return Stream(ssrc: UInt32(ssrc), codecPayloadType: codec, width: width, height: height,
                       opaqueField12: config, descriptionFields: description)
     }
+
+    #if DEBUG
+    private static func logShape(_ fields: [UInt64: [AppleHPProtoValue]], stage: String) {
+        let shape = fields.keys.sorted().prefix(32).map { key in
+            let values = fields[key]!
+            let types = values.prefix(8).map { value -> String in
+                switch value {
+                case .number: return "n"
+                case .bytes(let bytes): return "b\(bytes.count)"
+                case .fixed(let bytes): return "f\(bytes.count)"
+                }
+            }.joined(separator: ",")
+            return "\(key):\(values.count)[\(types)]"
+        }.joined(separator: " ")
+        VNCControlDiagnostics.logger.notice("HP answer shape stage=\(stage, privacy: .public) fields=\(shape, privacy: .public)")
+    }
+    #endif
 
     private static func inflate(_ input: Data) throws -> Data {
         guard !input.isEmpty, input.count <= 32768 else { throw Failure.oversized }
