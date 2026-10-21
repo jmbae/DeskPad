@@ -11,6 +11,9 @@ struct AppleHPHEVCDepacketizer {
     var packetization: Packetization = .automatic
     private(set) var detectedPacketization: Packetization?
     init(packetization: Packetization = .automatic) { self.packetization = packetization }
+    /// Valid only for the most recently completed access unit; nil for no-DON RTP.
+    private(set) var lastCompletedDON: UInt16?
+    private var accessUnitDON: UInt16?
     private var timestamp: UInt32?
     private var expected: UInt16?
     private var units: [Data] = []
@@ -26,7 +29,9 @@ struct AppleHPHEVCDepacketizer {
     #endif
 
     mutating func append(sequence: UInt16, timestamp incoming: UInt32, marker: Bool, payload: Data) throws -> [Data]? {
+        lastCompletedDON = nil
         if timestamp != incoming {
+            accessUnitDON = nil
             timestamp = incoming; expected = nil; units = []; fragment = Data()
             fragmentHeader = nil; fragmentDON = nil; bytes = 0; packets = 0; damaged = false; completed = false
         }
@@ -65,6 +70,13 @@ struct AppleHPHEVCDepacketizer {
             }
             let selected = packetization == .automatic ? detectedPacketization! : packetization
             let donBytes = selected == .appleDON ? 2 : 0
+            if donBytes == 2 {
+                let offset = type == 49 ? 3 : 2
+                guard b.count >= offset + 2 else { throw Failure.malformed }
+                let don = UInt16(b[offset]) << 8 | UInt16(b[offset + 1])
+                if let accessUnitDON, accessUnitDON != don { throw Failure.malformed }
+                accessUnitDON = don
+            }
             switch type {
             case 0...47:
                 guard fragmentHeader == nil, b.count > 2 + donBytes else { throw Failure.malformed }
@@ -120,6 +132,7 @@ struct AppleHPHEVCDepacketizer {
             guard marker else { return nil }
             guard fragmentHeader == nil, !units.isEmpty else { throw Failure.malformed }
             completed = true
+            lastCompletedDON = accessUnitDON
             return units
         } catch { damaged = true; units = []; fragment = Data(); throw error }
     }

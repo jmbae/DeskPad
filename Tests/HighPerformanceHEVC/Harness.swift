@@ -59,7 +59,20 @@ import CoreMedia
         let picture = expected == .appleDON ? Data(nal.prefix(2)) + Data([0,9]) + Data(nal.dropFirst(2)) : nal
         check(try auto.append(sequence: 1, timestamp: 2, marker: true, payload: picture) == [nal])
         precondition(auto.detectedPacketization == expected, "mode must persist across timestamps")
+        precondition(auto.lastCompletedDON == (expected == .appleDON ? 9 : nil))
     }
+    var metadata = AppleHPHEVCDepacketizer(packetization: .appleDON)
+    _ = try metadata.append(sequence: 1, timestamp: 1, marker: false, payload: Data([2,1,0,7,128]))
+    precondition(metadata.lastCompletedDON == nil)
+    do {
+        _ = try metadata.append(sequence: 2, timestamp: 1, marker: true, payload: Data([2,1,0,8,128]))
+        fatalError("mixed DON must not acknowledge an AU")
+    } catch {}
+    precondition(metadata.lastCompletedDON == nil)
+    _ = try metadata.append(sequence: 3, timestamp: 2, marker: true, payload: Data([2,1,255,255,128]))
+    precondition(metadata.lastCompletedDON == 65535)
+    _ = try metadata.append(sequence: 4, timestamp: 3, marker: true, payload: Data([2,1,0,0,128]))
+    precondition(metadata.lastCompletedDON == 0)
     var unresolved = AppleHPHEVCDepacketizer()
     do { _ = try unresolved.append(sequence: 0, timestamp: 0, marker: true, payload: nal); fatalError("guessed framing from slice") } catch {}
     precondition(unresolved.detectedPacketization == nil)
