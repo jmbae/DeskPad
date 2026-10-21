@@ -11,6 +11,8 @@ struct AppleHPMediaAnswer {
     enum Failure: Error { case malformed, unsupportedVersion, oversized, invalidCompression }
     struct Stream {
         let ssrc: UInt32
+        /// A capability list is not a selected codec. Selection is verified on RTP.
+        let supportedVideoPayloadTypes: Set<UInt8>
         let codecPayloadType: UInt8?
         let width: Int?
         let height: Int?
@@ -64,16 +66,24 @@ struct AppleHPMediaAnswer {
         let ssrc = try AppleHPProtoValue.oneNumber(description, 1)
         guard ssrc > 0, ssrc <= UInt32.max else { throw Failure.malformed }
         var codec: UInt8?, width: Int?, height: Int?
+        var payloadTypes = Set<UInt8>()
         if video {
-            let codecFields = try AppleHPProtoValue.parse(AppleHPProtoValue.oneBytes(description, 3))
-            let payloadType = try AppleHPProtoValue.oneNumber(codecFields, 1)
+            guard let banks = description[3], (1...2).contains(banks.count) else { throw Failure.malformed }
+            for bank in banks {
+                guard case .bytes(let bytes) = bank else { throw Failure.malformed }
+                let codecFields = try AppleHPProtoValue.parse(bytes)
+                let payloadType = try AppleHPProtoValue.oneNumber(codecFields, 1)
+                guard payloadType == 100 || payloadType == 123,
+                      payloadTypes.insert(UInt8(payloadType)).inserted else { throw Failure.malformed }
+            }
             let w = try AppleHPProtoValue.oneNumber(description, 4), h = try AppleHPProtoValue.oneNumber(description, 5)
-            guard payloadType < 128, w > 0, h > 0, w <= 16384, h <= 16384, w * h <= 64_000_000 else { throw Failure.malformed }
-            codec = UInt8(payloadType); width = Int(w); height = Int(h)
+            guard w > 0, h > 0, w <= 16384, h <= 16384, w * h <= 64_000_000 else { throw Failure.malformed }
+            codec = payloadTypes.count == 1 ? payloadTypes.first : nil
+            width = Int(w); height = Int(h)
         }
         let config = fields[12] == nil ? nil : try AppleHPProtoValue.oneBytes(fields, 12)
         guard config == nil || (2...64).contains(config!.count) else { throw Failure.malformed }
-        return Stream(ssrc: UInt32(ssrc), codecPayloadType: codec, width: width, height: height,
+        return Stream(ssrc: UInt32(ssrc), supportedVideoPayloadTypes: payloadTypes, codecPayloadType: codec, width: width, height: height,
                       opaqueField12: config, descriptionFields: description)
     }
 

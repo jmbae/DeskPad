@@ -128,7 +128,7 @@ actor AppleHPDatagramTransport {
         } catch { failMedia(.playbackFailure) }
     }
     func accept(_ answer: AppleHPMediaAnswer) async throws {
-        guard active, !negotiated, answer.secondVideo == nil, answer.video.codecPayloadType == expectedVideoPayloadType else {
+        guard active, !negotiated, answer.secondVideo == nil, answer.video.supportedVideoPayloadTypes.contains(expectedVideoPayloadType) else {
             throw AppleHPFailure.unsupportedVideoLayout
         }
         #if DEBUG
@@ -331,6 +331,10 @@ actor AppleHPDatagramTransport {
                     // unsupported tiled session, not an unauthenticated stray packet.
                     if stream == 1 { failMedia(.unsupportedVideoLayout); return }
                     throw HighPerformanceMediaError.malformedPacket
+                }
+                if stream == 1, packet.payloadType != expectedVideoPayloadType {
+                    failMedia(.unsupportedVideoLayout)
+                    return
                 }
                 if stream == 0 {
                     audioReceptionReport.observe(packet, now: ProcessInfo.processInfo.systemUptime)

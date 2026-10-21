@@ -47,6 +47,14 @@ import Foundation
         rejected { _ = try AppleHPMediaAnswer(Data(fixture.dropFirst(16).dropLast())) }
         rejected { _ = try AppleHPProtoValue.parse(Data([8] + Array(repeating: UInt8(255), count: 10))) }
         rejected { _ = try AppleHPProtoValue.oneNumber(AppleHPProtoValue.parse(Data([8,1,8,2])), 1) }
+        let directory = URL(fileURLWithPath: CommandLine.arguments[1]).deletingLastPathComponent()
+        let dual = try AppleHPMediaAnswer(Data(contentsOf: directory.appendingPathComponent("dual")))
+        precondition(dual.video.supportedVideoPayloadTypes == Set([100,123]) && dual.video.codecPayloadType == nil)
+        precondition(answer.video.supportedVideoPayloadTypes == Set([123]) && answer.audio.supportedVideoPayloadTypes.isEmpty)
+        for name in ["duplicate", "unknown", "excess", "empty"] {
+            let bytes = try Data(contentsOf: directory.appendingPathComponent(name))
+            rejected { _ = try AppleHPMediaAnswer(bytes) }
+        }
         print("PASS HP answer: validated stream metadata, fragmentation/coalescing, strict bounds, rekey barrier, malformed protobuf")
     }
 }
