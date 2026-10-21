@@ -110,7 +110,7 @@ actor AppleHPDatagramTransport {
                 if reportTicks % 10 == 0 {
                     rr = AppleHPReceptionReport.senderReport(sender: videoSSRC, unixTime: Date().timeIntervalSince1970) + rr
                 }
-                sockets[0].send(try videoFeedback.protect(rr))
+                try sendVideoFeedback(rr)
             }
         } catch { failMedia(.playbackFailure) }
     }
@@ -120,6 +120,8 @@ actor AppleHPDatagramTransport {
         }
         #if DEBUG
         VNCControlDiagnostics.logger.notice("HP answer status=\(answer.status) videoPT=\(answer.video.codecPayloadType ?? 0) width=\(answer.video.width ?? 0) height=\(answer.video.height ?? 0)")
+        let feedbackAllowed = try? AppleHPProtoValue.oneNumber(answer.video.descriptionFields, 2)
+        VNCControlDiagnostics.logger.notice("HP answer videoFeedback=\(feedbackAllowed.map(String.init) ?? "absent", privacy: .public)")
         #endif
         // Some servers omit the optional tile count in their answer. The offer
         // requests one picture; depacketization independently rejects a second SSRC.
@@ -134,12 +136,19 @@ actor AppleHPDatagramTransport {
         requestKeyframe()
     }
 
+    private func sendVideoFeedback(_ plaintext: Data) throws {
+        guard active, sockets.count == 2 else { return }
+        try AppleHPVideoFeedbackRoute.send(plaintext, protect: { try videoFeedback.protect($0) }) {
+            sockets[$0].send($1)
+        }
+    }
+
     func requestKeyframe() {
         let now = ProcessInfo.processInfo.systemUptime
         guard active, sockets.count == 2, let remoteVideoSSRC, now - lastPictureLossRequest >= 0.5 else { return }
         do {
             let packet = AppleHPFeedback.pictureLoss(sender: videoSSRC, media: remoteVideoSSRC)
-            sockets[0].send(try videoFeedback.protect(packet))
+            try sendVideoFeedback(packet)
             lastPictureLossRequest = now
         } catch { failMedia(.playbackFailure) }
     }
@@ -205,7 +214,7 @@ actor AppleHPDatagramTransport {
         if let remoteVideoSSRC, !output.missing.isEmpty,
            let nack = HighPerformanceNACK.compound(sender: videoSSRC, media: remoteVideoSSRC, sequences: output.missing) {
             do {
-                sockets[0].send(try videoFeedback.protect(nack))
+                try sendVideoFeedback(nack)
                 nackCount += 1
                 #if DEBUG
                 if nackCount <= 3 || nackCount % 100 == 0 {
