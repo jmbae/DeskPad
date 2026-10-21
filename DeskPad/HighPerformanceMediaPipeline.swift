@@ -186,20 +186,9 @@ extension HighPerformanceMediaOutput {
         catch { videos[packet.ssrc] = state; if !ltrEnabled { loseVideoContinuity() }; throw error }
         videos[packet.ssrc] = state
         guard let units else { return }
-        if ltrEnabled, state.hevcDepacketizer.detectedPacketization == .rfc7798NoDON {
-            // Some servers accept the offer's LTR flag but send ordinary RFC RTP.
-            // Without a wire DON there is no frame identity we can safely ACK.
-            // Re-enter the normal keyframe gate rather than failing the session
-            // or treating unverified P pictures as reference-safe.
-            ltrEnabled = false
-            referenceGuard.reset()
-            pendingVideo.removeAll()
-            needsKeyframe = true
-            if isPlaying { output.reset(); isPlaying = false }
-            #if DEBUG
-            VNCControlDiagnostics.logger.notice("HP LTR downgraded: authenticated parameter AP has no DON")
-            #endif
-        }
+        // Negotiated LTR may still use ordinary RTP without a DON. Keep native
+        // reference validation: a later picture can recover from a clean retained
+        // reference. Only the feedback identity is unavailable, never invent one.
         #if DEBUG
         diagnosticVideoAUs += 1
         if diagnosticVideoAUs <= 20 || diagnosticVideoAUs % 120 == 0 {
@@ -322,7 +311,7 @@ extension HighPerformanceMediaOutput {
                 }
                 do {
                     if ltrEnabled, let units = video.hevcUnits {
-                        guard let don = video.don else { throw Failure.unsupportedStream }
+                        let don = video.don
                         let prepared = PreparedPicture()
                         try output.enqueueVideo(sample, prepare: { [weak self] in
                             guard let self, self.ltrEnabled else { return false }
@@ -342,10 +331,10 @@ extension HighPerformanceMediaOutput {
                                 #if DEBUG
                                 self.diagnosticLTRDecoded += 1
                                 if self.diagnosticLTRDecoded <= 10 || self.diagnosticLTRDecoded % 120 == 0 {
-                                    VNCControlDiagnostics.logger.notice("HP LTR native decoded count=\(self.diagnosticLTRDecoded) don=\(don)")
+                                    VNCControlDiagnostics.logger.notice("HP LTR native decoded count=\(self.diagnosticLTRDecoded) don=\(don.map(Int.init) ?? -1)")
                                 }
                                 #endif
-                                self.onCleanHEVCFrame?(don)
+                                if let don { self.onCleanHEVCFrame?(don) }
                             }
                             else { self.referenceGuard.reset(); self.onNeedsKeyframe?() }
                         })

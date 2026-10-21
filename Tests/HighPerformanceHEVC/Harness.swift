@@ -124,12 +124,46 @@ import CoreMedia
     var fallbackACKs = 0
     fallback.onCleanHEVCFrame = { _ in fallbackACKs += 1 }
     try fallback.consumeVideo(packet(55, payload: paramsRFC))
-    // The now-untrusted P picture must not open the ordinary startup gate.
+    // A malformed/unproven P picture is rejected by the reference gate, not
+    // handed to native decode. No DON is ever fabricated for feedback.
     try fallback.consumeVideo(packet(55, seq: 1, payload: Data([2,1,0x80])))
     try fallback.observe([HighPerformanceSenderReport(ssrc: 55, ntpSeconds: 100, ntpFraction: 0, rtpTimestamp: 0)], clockRate: 90000)
-    precondition(!fallback.isPlaying && fallbackSink.video == 0 && fallbackSink.decodes.isEmpty)
+    precondition(fallbackSink.video == 0 && fallbackSink.decodes.count == 1)
+    let invalid = fallbackSink.decodes.removeFirst()
+    precondition(!invalid.0()); invalid.1(false)
     try fallback.consumeVideo(packet(55, seq: 2, payload: nal))
-    precondition(fallback.isPlaying && fallbackSink.video == 1 && fallbackSink.decodes.isEmpty && fallbackACKs == 0, "accepted LTR without DON must use normal display and never ACK")
+    let cleanNoDON = fallbackSink.decodes.removeFirst()
+    precondition(cleanNoDON.0()); cleanNoDON.1(true)
+    precondition(fallbackSink.video == 0 && fallbackACKs == 0, "no-DON native validation must never ACK")
+    let chainBytes = [UInt8](try Data(contentsOf: URL(fileURLWithPath: "Tests/HighPerformancePlayback/chain120.hevc")))
+    var chainStarts: [(Int,Int)] = []; var chainIndex = 0
+    while chainIndex + 3 < chainBytes.count {
+        if Array(chainBytes[chainIndex..<chainIndex+4]) == [0,0,0,1] { chainStarts.append((chainIndex,4)); chainIndex += 4 }
+        else if Array(chainBytes[chainIndex..<chainIndex+3]) == [0,0,1] { chainStarts.append((chainIndex,3)); chainIndex += 3 }
+        else { chainIndex += 1 }
+    }
+    let chainUnits = chainStarts.enumerated().map { n,p in Data(chainBytes[(p.0+p.1)..<(n+1 < chainStarts.count ? chainStarts[n+1].0 : chainBytes.count)]) }
+    var chainParams = Data([96,1])
+    for unit in chainUnits where (32...34).contains(Int((unit.first! >> 1) & 63)) {
+        chainParams.append(contentsOf: [UInt8(unit.count >> 8),UInt8(unit.count & 255)]); chainParams.append(unit)
+    }
+    let chainSink = HEVCSink()
+    let chain = try HighPerformanceMediaPipeline(output: chainSink, videoPayloadType: 100, videoCodec: .hevc)
+    try chain.configureLTR(enabled: true)
+    var chainACKs = 0
+    chain.onCleanHEVCFrame = { _ in chainACKs += 1 }
+    try chain.consumeVideo(packet(77, payload: chainParams))
+    try chain.observe([HighPerformanceSenderReport(ssrc:77,ntpSeconds:1,ntpFraction:0,rtpTimestamp:0)], clockRate:90000)
+    var chainFrames = 0
+    for unit in chainUnits where (unit.first! >> 1) & 63 < 32 {
+        chainFrames += 1
+        try chain.consumeVideo(packet(77,seq:UInt8(chainFrames),payload:unit))
+        precondition(chainSink.decodes.count == 1)
+        let work = chainSink.decodes.removeFirst()
+        precondition(work.0(), "complete no-DON reference chain must remain decodable")
+        work.1(true)
+    }
+    precondition(chainFrames == 120 && chainACKs == 0 && chainSink.video == 0)
     print("HEVC single/AP/FU, wrap/loss/malformed/DON, native format and single-SSRC pipeline passed")
  }
 }
