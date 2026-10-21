@@ -19,7 +19,9 @@ converter, pending output and concealment history.
   719,968 frames and synthesized 5,771 gap frames, including one capped long gap,
   without a playback error. A subsequent manual reconnect also presented video
   and restarted PCM decoding. One earlier attempt lost the initial video frame
-  and timed out; bounded startup recovery is being verified separately.
+  and timed out. The client now retries that authenticated first-frame deadline
+  once after awaiting UDP port release; cancellation, generation changes and
+  authentication/trust/media errors are excluded. The retry policy regression passes.
 - An independent review checked reference/decoder generations, audio retry
   identity, partial output, long-gap history and reconnect resets.
 
