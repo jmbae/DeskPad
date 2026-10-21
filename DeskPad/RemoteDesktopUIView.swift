@@ -1,4 +1,5 @@
 import UIKit
+import AVFoundation
 #if DEBUG
 import os
 #endif
@@ -49,6 +50,23 @@ enum RemoteScrollSensitivity: String, CaseIterable {
 }
 
 final class RemoteDesktopUIView: UIView {
+    var videoLayer: AVSampleBufferDisplayLayer? {
+        didSet {
+            guard videoLayer !== oldValue else { return }
+            oldValue?.removeFromSuperlayer()
+            if let videoLayer { videoLayer.videoGravity = .resize; layer.insertSublayer(videoLayer, at: 0) }
+            setNeedsLayout()
+        }
+    }
+    private func updateVideoFrame() {
+        guard let videoLayer else { return }
+        let rect = calculateDisplayRect()
+        CATransaction.begin(); CATransaction.setDisableActions(true)
+        videoLayer.frame = CGRect(x: rect.minX * zoomScale + panOffset.x, y: rect.minY * zoomScale + panOffset.y,
+                                  width: rect.width * zoomScale, height: rect.height * zoomScale)
+        CATransaction.commit()
+    }
+
 
     #if DEBUG
     private var diagnosticCallbackCount = 0
@@ -70,6 +88,16 @@ final class RemoteDesktopUIView: UIView {
     var onKey: ((UInt32, Bool) -> Void)?
     var onPointer: ((CGPoint, UInt8) -> Void)?
     var onFocusChanged: ((Bool) -> Void)?
+    var onInputLanguageChanged: ((String?) -> Void)?
+    @objc private func inputLanguageDidChange() {
+        guard isFirstResponder else { return }
+        onInputLanguageChanged?(textInputMode?.primaryLanguage)
+    }
+    private func observeInputLanguage() {
+        NotificationCenter.default.addObserver(self, selector: #selector(inputLanguageDidChange),
+            name: UITextInputMode.currentInputModeDidChangeNotification, object: nil)
+    }
+    deinit { NotificationCenter.default.removeObserver(self) }
     private var pressedKeys: [UIKeyboardHIDUsage: UInt32] = [:]
     private var pointerMask: UInt8 = 0
     private var pointerPoint: CGPoint = .zero
@@ -144,12 +172,12 @@ final class RemoteDesktopUIView: UIView {
         releaseAllKeys()
         wantsVirtualKeyboard = false
         let result = super.resignFirstResponder()
-        if result { onFocusChanged?(false) }
+        if result { onFocusChanged?(false); onInputLanguageChanged?(nil) }
         return result
     }
     override func becomeFirstResponder() -> Bool {
         let result = super.becomeFirstResponder()
-        if result { onFocusChanged?(wantsVirtualKeyboard) }
+        if result { onFocusChanged?(wantsVirtualKeyboard); inputLanguageDidChange() }
         return result
     }
 
@@ -187,6 +215,7 @@ final class RemoteDesktopUIView: UIView {
         isMultipleTouchEnabled = true
         setupPointerMarker()
         setupGestureRecognizers()
+        observeInputLanguage()
     }
 
     required init?(coder: NSCoder) {
@@ -195,6 +224,7 @@ final class RemoteDesktopUIView: UIView {
         isMultipleTouchEnabled = true
         setupPointerMarker()
         setupGestureRecognizers()
+        observeInputLanguage()
     }
 
     override var canBecomeFirstResponder: Bool { true }
@@ -292,6 +322,7 @@ final class RemoteDesktopUIView: UIView {
     }
 
     private func updatePointerMarker() {
+        updateVideoFrame()
         guard hasPointerPosition, let cursor = cursorPresentation,
               !cursor.isHidden, desktopSize.width > 0, desktopSize.height > 0,
               bounds.width > 0, bounds.height > 0 else {
@@ -588,20 +619,34 @@ final class RemoteDesktopUIView: UIView {
             let symbol = Self.keysym(for: key.keyCode) ?? key.charactersIgnoringModifiers.unicodeScalars.first.map { $0.value <= 255 ? $0.value : 0x01000000 | $0.value }
             guard let symbol else { unhandled.insert(press); continue }
             keyDown(code: key.keyCode, keysym: symbol)
+            // UIKit owns printable text/IME, so it must see both Shift edges.
+            // Also retain remote Shift for selection and modified shortcuts.
+            if Self.isShift(key.keyCode) { unhandled.insert(press) }
         }
         if !unhandled.isEmpty { super.pressesBegan(unhandled, with: event) }
     }
     override func pressesEnded(_ presses: Set<UIPress>, with event: UIPressesEvent?) {
-        var unhandled = Set<UIPress>()
-        for press in presses {
-            if let code = press.key?.keyCode, let symbol = pressedKeys.removeValue(forKey: code) { onKey?(symbol, false) }
-            else { unhandled.insert(press) }
-        }
+        let unhandled = releaseHardwarePresses(presses)
         if !unhandled.isEmpty { super.pressesEnded(unhandled, with: event) }
     }
     override func pressesCancelled(_ presses: Set<UIPress>, with event: UIPressesEvent?) {
-        pressesEnded(presses, with: event)
+        let unhandled = releaseHardwarePresses(presses)
+        if !unhandled.isEmpty { super.pressesCancelled(unhandled, with: event) }
     }
+    private func releaseHardwarePresses(_ presses: Set<UIPress>) -> Set<UIPress> {
+        var unhandled = Set<UIPress>()
+        for press in presses {
+            if let code = press.key?.keyCode, let symbol = pressedKeys.removeValue(forKey: code) {
+                onKey?(symbol, false)
+                if Self.isShift(code) { unhandled.insert(press) }
+            } else { unhandled.insert(press) }
+        }
+        return unhandled
+    }
+    private static func isShift(_ code: UIKeyboardHIDUsage) -> Bool {
+        code == .keyboardLeftShift || code == .keyboardRightShift
+    }
+
     private static func keysym(for code: UIKeyboardHIDUsage) -> UInt32? {
         switch code {
         case .keyboardLeftControl: return 0xffe3
@@ -677,6 +722,7 @@ extension RemoteDesktopUIView: UITextInput {
     }
 
     func insertText(_ text: String) {
+        inputLanguageDidChange()
         #if DEBUG
         recordCompositionCallback("insertText", text: text)
         #endif
@@ -701,6 +747,7 @@ extension RemoteDesktopUIView: UITextInput {
     // MARK: Marked Text (IME Composition)
 
     func setMarkedText(_ markedText: String?, selectedRange: NSRange) {
+        inputLanguageDidChange()
         #if DEBUG
         recordCompositionCallback("setMarkedText", text: markedText)
         #endif
