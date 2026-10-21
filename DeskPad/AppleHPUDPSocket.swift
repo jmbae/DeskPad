@@ -71,7 +71,9 @@ final class AppleHPUDPSocket: @unchecked Sendable {
         queue.setSpecific(key: queueKey, value: 1)
         // Only the cancel handler closes an activated descriptor. Capturing the
         // numeric fd here prevents delayed cancellation closing a reused field.
-        source.setCancelHandler { Darwin.close(fd) }
+        closed.enter()
+        let closed = self.closed
+        source.setCancelHandler { Darwin.close(fd); closed.leave() }
         source.setEventHandler { [weak self] in self?.drain() }
         bound = true
         source.resume()
@@ -107,6 +109,14 @@ final class AppleHPUDPSocket: @unchecked Sendable {
                 #endif
             }
             // EAGAIN/ECONNREFUSED are transient datagram loss, never teardown.
+        }
+    }
+
+    private let closed = DispatchGroup()
+
+    func waitUntilClosed() async {
+        await withCheckedContinuation { continuation in
+            closed.notify(queue: .global()) { continuation.resume() }
         }
     }
 

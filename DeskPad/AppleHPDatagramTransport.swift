@@ -195,6 +195,12 @@ actor AppleHPDatagramTransport {
         Task { await onFailure(reason) }
     }
 
+    func closeForRestart() async {
+        let retiringSockets = sockets
+        close()
+        for socket in retiringSockets { await socket.waitUntilClosed() }
+    }
+
     func close() {
         active = false
         inbox.finish()

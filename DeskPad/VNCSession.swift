@@ -152,6 +152,7 @@ final class VNCSessionModel {
         sessionTask = Task { [weak self] in
             var activeClient = client
             var didRetry = false
+            var startupRetry = AppleHPStartupRetry()
             while !Task.isCancelled {
                 do {
                     try await activeClient.run()
@@ -178,6 +179,29 @@ final class VNCSessionModel {
                     await activeClient.close()
                     return
                 } catch {
+                    let startupExpired = await activeClient.canRetryHPStartup
+                    if startupRetry.consume(firstFrameExpired: startupExpired,
+                        cancelled: Task.isCancelled, currentGeneration: self?.generation == generation) {
+                        #if DEBUG
+                        VNCControlDiagnostics.logger.notice("HP initial frame timed out; retrying once with a fresh session")
+                        #endif
+                        self?.inputQueue.cancel()
+                        // Release UDP ports before creating the replacement session.
+                        await activeClient.closeForStartupRetry()
+                        guard !Task.isCancelled, let model = self, model.generation == generation else { return }
+                        model.highPerformancePlayback?.reset()
+                        model.highPerformancePlayback = nil
+                        model.remoteCursor = nil
+                        model.screenWidth = 0; model.screenHeight = 0
+                        let replacement = RFBClient(host: savedConnection.host, port: savedConnection.port,
+                            username: savedConnection.username, password: password,
+                            pixelFormat: colorQuality.pixelFormat, connectionMode: connectionMode,
+                            model: model, generation: generation)
+                        model.client = replacement
+                        model.state = .connecting
+                        activeClient = replacement
+                        continue
+                    }
                     self?.fail(error, generation: generation)
                     await activeClient.close()
                     return
@@ -423,6 +447,7 @@ private actor RFBClient {
     private var usesHighPerformance = false
     private var hasFrame = false
     private var firstFrameTimeout: Task<Void, Never>?
+    private var hpFirstFrameExpired = false
     private let queue = DispatchQueue(label: "DeskPad.RFBTransport")
     private var connection: NWConnection?
     private var pixels = Data()
@@ -795,9 +820,23 @@ private actor RFBClient {
         #if DEBUG
         VNCControlDiagnostics.logger.notice("first frame deadline expired")
         #endif
+        hpFirstFrameExpired = usesHighPerformance
         timeoutState.markExpired()
         if usesHighPerformance { connection?.forceCancel() }
         else { connection?.cancel() }
+    }
+
+    var canRetryHPStartup: Bool {
+        // Only the authenticated media first-frame deadline qualifies. Network,
+        // credentials, server trust, and explicit media failures never retry.
+        hpFirstFrameExpired && !hasFrame && hpTerminalFailure.value == nil
+    }
+
+    func closeForStartupRetry() async {
+        let datagrams = hpDatagrams
+        hpDatagrams = nil
+        close()
+        await datagrams?.closeForRestart()
     }
 
     func close() {
