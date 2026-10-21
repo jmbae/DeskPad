@@ -1,4 +1,5 @@
 import Foundation
+import UIKit
 import Network
 import Observation
 import CryptoKit
@@ -21,6 +22,8 @@ nonisolated enum VNCControlDiagnostics {
         case .connected: "connected"
         case .failed: "failed"
         case .ended: "ended"
+        case .paused: "paused"
+        case .reconnecting: "reconnecting"
         }
     }
 }
@@ -37,6 +40,8 @@ enum VNCConnectionState: Equatable {
     case connected
     case failed(String)
     case ended
+    case paused
+    case reconnecting(Int)
 
     var title: String {
         switch self {
@@ -48,6 +53,8 @@ enum VNCConnectionState: Equatable {
         case .connected: "연결됨"
         case .failed(let message): message
         case .ended: "Mac과의 연결이 종료되었습니다"
+        case .paused: "연결 일시 정지됨"
+        case .reconnecting(let attempt): "다시 연결 중 (\(attempt)/3)…"
         }
     }
 }
@@ -109,6 +116,7 @@ final class VNCSessionModel {
     private(set) var highPerformancePlayback: HighPerformancePlayback?
     func attachHighPerformance(_ playback: HighPerformancePlayback, width: Int, height: Int, generation: UUID) {
         guard self.generation == generation else { return }
+        playback.setMuted(!recovery.foreground)
         highPerformancePlayback = playback
         screenWidth = width; screenHeight = height
         if state != .connected { state = .initializing }
@@ -134,8 +142,118 @@ final class VNCSessionModel {
     private var client: RFBClient?
     private var sessionTask: Task<Void, Never>?
 
+    private struct Intent {
+        let connection: SavedConnection
+        let password: String?
+        let quality: VNCColorQuality
+        let mode: DeskPadConnectionMode
+    }
+    private var intent: Intent?
+    private var recovery = SessionRecoveryPolicy()
+    private var resumeTask: Task<Void, Never>?
+    private var graceTask: Task<Void, Never>?
+    private var closeTask: Task<Void, Never>?
+    private var backgroundTask: UIBackgroundTaskIdentifier = .invalid
+
+    func sceneActive() {
+        lifecycleLog("foreground")
+        endGrace()
+        highPerformancePlayback?.setMuted(false)
+        switch recovery.activate() {
+        case .resume: scheduleResume(delay: 0, attempt: 0)
+        case .retry(let attempt, let delay): scheduleResume(delay: delay, attempt: attempt)
+        case .stop: disconnect()
+        default: break
+        }
+    }
+
+    func sceneInactive() {
+        recovery.background()
+        highPerformancePlayback?.setMuted(true)
+    }
+
+    func sceneBackground() {
+        sceneInactive()
+        guard intent != nil, backgroundTask == .invalid else { return }
+        lifecycleLog("background grace started")
+        let token = recovery.generation
+        backgroundTask = UIApplication.shared.beginBackgroundTask(withName: "DeskPad session grace") { [weak self] in
+            Task { @MainActor in
+                guard let self, self.recovery.generation == token, !self.recovery.foreground else { return }
+                self.pauseSession()
+            }
+        }
+        guard backgroundTask != .invalid else { pauseSession(); return }
+        graceTask = Task { [weak self] in
+            try? await Task.sleep(for: .seconds(20))
+            guard !Task.isCancelled, let self, self.recovery.generation == token else { return }
+            self.pauseSession()
+        }
+    }
+
+    private func lifecycleLog(_ event: String) {
+        #if DEBUG
+        VNCControlDiagnostics.logger.notice("lifecycle: \(event, privacy: .public)")
+        #endif
+    }
+
+    private func endGrace() {
+        graceTask?.cancel(); graceTask = nil
+        if backgroundTask != .invalid {
+            UIApplication.shared.endBackgroundTask(backgroundTask)
+            backgroundTask = .invalid
+        }
+    }
+
+    private func retireTransport() {
+        generation = UUID()
+        answerHPTrust(false)
+        sessionTask?.cancel(); sessionTask = nil
+        resumeTask?.cancel(); resumeTask = nil
+        inputQueue.cancel()
+        let previous = closeTask
+        let old = client
+        client = nil
+        closeTask = Task { await previous?.value; await old?.closeForStartupRetry() }
+        highPerformancePlayback?.reset(); highPerformancePlayback = nil
+        framebuffer = Data(); framebufferRevision &+= 1
+        remoteCursor = nil; screenWidth = 0; screenHeight = 0
+    }
+
+    private func pauseSession() {
+        guard intent != nil else { return }
+        lifecycleLog("paused; transport retired")
+        recovery.pause()
+        retireTransport()
+        endGrace()
+        state = .paused
+    }
+
+    private func scheduleResume(delay: Double, attempt: Int) {
+        guard intent != nil else { return }
+        retireTransport()
+        let token = generation
+        lifecycleLog("reconnect attempt \(attempt), delay \(delay)")
+        state = attempt == 0 ? .connecting : .reconnecting(attempt)
+        resumeTask = Task { [weak self] in
+            guard let self else { return }
+            await self.closeTask?.value
+            do { try await Task.sleep(for: .seconds(delay)) } catch { return }
+            guard self.generation == token, let intent = self.intent else { return }
+            guard self.recovery.foreground else { self.pauseSession(); return }
+            self.startAttempt(to: intent.connection, password: intent.password,
+                colorQuality: intent.quality, connectionMode: intent.mode)
+        }
+    }
+
     func connect(to savedConnection: SavedConnection, password: String? = nil, colorQuality: VNCColorQuality = .fullColor, connectionMode: DeskPadConnectionMode = .standard) {
         disconnect()
+        recovery = SessionRecoveryPolicy()
+        intent = Intent(connection: savedConnection, password: password, quality: colorQuality, mode: connectionMode)
+        scheduleResume(delay: 0, attempt: 0)
+    }
+
+    private func startAttempt(to savedConnection: SavedConnection, password: String?, colorQuality: VNCColorQuality, connectionMode: DeskPadConnectionMode) {
         let generation = self.generation
         let client = RFBClient(
             host: savedConnection.host,
@@ -180,7 +298,7 @@ final class VNCSessionModel {
                     return
                 } catch {
                     let startupExpired = await activeClient.canRetryHPStartup
-                    if startupRetry.consume(firstFrameExpired: startupExpired,
+                    if self?.recovery.established == false, startupRetry.consume(firstFrameExpired: startupExpired,
                         cancelled: Task.isCancelled, currentGeneration: self?.generation == generation) {
                         #if DEBUG
                         VNCControlDiagnostics.logger.notice("HP initial frame timed out; retrying once with a fresh session")
@@ -213,11 +331,18 @@ final class VNCSessionModel {
 
     isolated deinit {
         sessionTask?.cancel()
+        resumeTask?.cancel()
+        graceTask?.cancel()
+        if backgroundTask != .invalid { UIApplication.shared.endBackgroundTask(backgroundTask) }
         inputQueue.cancel()
         if let client { Task { await client.close() } }
     }
 
     func disconnect() {
+        intent = nil
+        recovery.close()
+        endGrace()
+        retireTransport()
         answerHPTrust(false)
         highPerformancePlayback?.reset(); highPerformancePlayback = nil
         generation = UUID()
@@ -243,6 +368,19 @@ final class VNCSessionModel {
         #if DEBUG
         VNCControlDiagnostics.logger.error("session failure: \(String(describing: error), privacy: .public)")
         #endif
+        let recoverable: Bool
+        if error is RFBConnectionClosed { recoverable = true }
+        else if let network = error as? NWError {
+            switch network { case .posix, .dns: recoverable = true; default: recoverable = false }
+        } else if case RFBClient.ClientError.connection = error { recoverable = true }
+        else if let media = error as? AppleHPFailure {
+            switch media { case .mediaIdleTimeout, .videoStalled: recoverable = true; default: recoverable = false }
+        } else { recoverable = false }
+        switch recovery.failure(recoverable: recoverable, generation: recovery.generation, cancelled: error is CancellationError) {
+        case .retry(let attempt, let delay): scheduleResume(delay: delay, attempt: attempt); return
+        case .paused: pauseSession(); return
+        default: break
+        }
         let remoteTermination = error is RFBConnectionClosed && (state == .connected || state == .initializing)
         disconnect()
         state = remoteTermination ? .ended : .failed(error.localizedDescription)
@@ -320,6 +458,7 @@ final class VNCSessionModel {
     fileprivate func setState(_ state: VNCConnectionState, generation: UUID) {
         guard self.generation == generation else { return }
         self.state = state
+        if state == .connected { recovery.connected() }
     }
 
     fileprivate func setScreen(width: Int, height: Int, framebuffer: Data, generation: UUID) {
@@ -347,6 +486,7 @@ final class VNCSessionModel {
         self.framebuffer = framebuffer
         framebufferRevision &+= 1
         state = .connected
+        recovery.connected()
     }
 
     fileprivate func setCursor(_ cursor: RFBCursorShape, generation: UUID) {
@@ -388,7 +528,7 @@ nonisolated private final class RFBTimeoutState: @unchecked Sendable {
 }
 
 private actor RFBClient {
-    private enum ClientError: LocalizedError {
+    fileprivate enum ClientError: LocalizedError {
         case connection(String)
         case invalidServerMessage(String)
         case unsupportedSecurity([UInt8])

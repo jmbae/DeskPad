@@ -254,6 +254,8 @@ final class HighPerformanceSampleFactory {
         #endif
     }
 
+    func setMuted(_ muted: Bool) { audioRenderer.isMuted = muted }
+
     func reset() {
         nativeVideoDecoder?.reset()
         pcmAudio.reset()

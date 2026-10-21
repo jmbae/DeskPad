@@ -260,6 +260,7 @@ private struct SessionView: View {
     @Environment(\.dismiss) private var dismiss
     @State private var session = VNCSessionModel()
     @State private var keyboardController = RemoteKeyboardController()
+    @State private var didStart = false
     @Environment(\.scenePhase) private var scenePhase
     @State private var warning: UserMessage?
     @State private var password: String?
@@ -385,6 +386,8 @@ private struct SessionView: View {
                 }
             }
             .task {
+                guard !didStart else { return }
+                didStart = true
                 do {
                     password = try store.password(for: connection)
                     session.connect(to: connection, password: password, colorQuality: colorQuality, connectionMode: .restored(from: storedConnectionMode))
@@ -402,7 +405,7 @@ private struct SessionView: View {
             }
             .onChange(of: session.state) { _, newState in
                 switch newState {
-                case .ended, .failed, .disconnected: keyboardController.dismiss()
+                case .ended, .failed, .disconnected, .paused, .reconnecting: keyboardController.dismiss()
                 default: break
                 }
                 if case .connected = newState {
@@ -426,11 +429,17 @@ private struct SessionView: View {
                 Text("처음 연결하는 고성능 서버입니다. 연결 대상이 맞는지 확인하세요.\n\(challenge.host):\(String(challenge.port))\nSHA-256: \(challenge.fingerprint)")
             }
             .onChange(of: scenePhase) { _, phase in
-                if phase != .active { keyboardController.dismiss(); keyboardController.inputView?.releaseAllKeys() }
+                if phase != .active { keyboardController.inputView?.releaseAllKeys(); keyboardController.dismiss() }
+                switch phase {
+                case .active: session.sceneActive()
+                case .inactive: session.sceneInactive()
+                case .background: session.sceneBackground()
+                @unknown default: session.sceneInactive()
+                }
             }
             .onDisappear {
                 keyboardController.dismiss()
-                session.disconnect()
+                if scenePhase == .active { session.disconnect() }
             }
         }
     }
@@ -442,6 +451,8 @@ private struct SessionView: View {
         case .connecting, .handshaking, .authenticating, .initializing: "서버 응답을 기다리고 있습니다."
         case .connected: "첫 번째 화면 업데이트를 기다리고 있습니다."
         case .disconnected: "연결이 종료되었습니다."
+        case .paused: "앱으로 돌아오면 다시 연결합니다. 닫기를 누르면 연결을 취소합니다."
+        case .reconnecting: "네트워크 연결을 복구하고 있습니다. 닫기를 누르면 취소합니다."
         }
     }
 
@@ -455,6 +466,8 @@ private extension VNCSessionModel {
         case .connecting, .handshaking, .authenticating, .initializing: "network"
         case .connected: "display"
         case .disconnected, .ended: "wifi.slash"
+        case .paused: "pause.circle"
+        case .reconnecting: "arrow.clockwise"
         }
     }
 
