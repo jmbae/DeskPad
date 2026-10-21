@@ -329,6 +329,7 @@ private struct SessionView: View {
                     if case .connected = session.state {
                         Text("iPad · \(keyboardController.inputLanguageLabel)")
                             .font(.subheadline.monospacedDigit())
+                            .fixedSize(horizontal: true, vertical: false)
                             .accessibilityLabel("iPad 입력 언어: \(keyboardController.inputLanguageLabel)")
                             .accessibilityHint("원격 Mac의 입력 언어가 아닌 iPad 키보드의 선택 상태입니다.")
                         Button {
