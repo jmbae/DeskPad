@@ -32,6 +32,9 @@ actor AppleHPDatagramTransport {
     private var videoReorder = HighPerformanceRTPReorderBuffer()
     private var videoWorker: AppleHPVideoDeliveryQueue<HighPerformanceRTPPacket>?
     private var nackCount = 0
+    private var receptionReport = AppleHPReceptionReport()
+    private var reportTicks = 0
+    private var rejectionCounts: [String: Int] = [:]
 
     init(offer: AppleHPMediaOffer, videoPayloadType: UInt8 = 123, pipeline: HighPerformanceMediaPipeline, onPlaying: @escaping () async -> Void, onFailure: @escaping (AppleHPFailure) async -> Void) throws {
         self.expectedVideoPayloadType = videoPayloadType
@@ -94,9 +97,14 @@ actor AppleHPDatagramTransport {
             let timestamp = UInt32(truncatingIfNeeded: UInt64(ProcessInfo.processInfo.systemUptime * 48_000))
             let packet = try heartbeat.protect(payload: Data([0, 0x68, 0x34, 0]), payloadType: 101, timestamp: timestamp)
             sockets[0].send(packet)
-            var rr = Data([0x80, 201, 0, 1])
-            rr.append(contentsOf: [UInt8(truncatingIfNeeded: videoSSRC >> 24), UInt8(truncatingIfNeeded: videoSSRC >> 16), UInt8(truncatingIfNeeded: videoSSRC >> 8), UInt8(truncatingIfNeeded: videoSSRC)])
-            sockets[0].send(try videoFeedback.protect(rr))
+            if let remoteVideoSSRC {
+                var rr = receptionReport.receiverReport(sender: videoSSRC, media: remoteVideoSSRC, now: ProcessInfo.processInfo.systemUptime)
+                reportTicks += 1
+                if reportTicks % 10 == 0 {
+                    rr = AppleHPReceptionReport.senderReport(sender: videoSSRC, unixTime: Date().timeIntervalSince1970) + rr
+                }
+                sockets[0].send(try videoFeedback.protect(rr))
+            }
         } catch { failMedia(.playbackFailure) }
     }
     func accept(_ answer: AppleHPMediaAnswer) throws {
@@ -220,6 +228,9 @@ actor AppleHPDatagramTransport {
                     guard report.ssrc == remoteAudioSSRC || report.ssrc == remoteVideoSSRC else {
                         throw HighPerformanceSRTPError.malformedPacket
                     }
+                    if report.ssrc == remoteVideoSSRC {
+                        receptionReport.observe(report, now: ProcessInfo.processInfo.systemUptime)
+                    }
                     try await pipeline.observe([report], clockRate: report.ssrc == remoteAudioSSRC ? 48000 : 90000)
                 }
                 #if DEBUG
@@ -241,6 +252,7 @@ actor AppleHPDatagramTransport {
                         didStart = true; await onPlaying()
                     }
                 } else {
+                    receptionReport.observe(packet, now: ProcessInfo.processInfo.systemUptime)
                     await deliverVideo(videoReorder.insert(packet, now: ProcessInfo.processInfo.systemUptime))
                 }
                 counts[stream] += 1
@@ -264,6 +276,15 @@ actor AppleHPDatagramTransport {
                 default: failMedia(.playbackFailure); return
                 }
             }
+            #if DEBUG
+            let reason = String(describing: error)
+            let rejectionKey = "\(stream):\(reason)"
+            rejectionCounts[rejectionKey, default: 0] += 1
+            let reasonCount = rejectionCounts[rejectionKey]!
+            if reasonCount == 1 || reasonCount % 100 == 0 {
+                VNCControlDiagnostics.logger.notice("HP UDP rejection stream=\(stream) reason=\(reason, privacy: .public) count=\(reasonCount)")
+            }
+            #endif
             rejected[stream] += 1
             if rejected[stream] == 1 {
                 #if DEBUG

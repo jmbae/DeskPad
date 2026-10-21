@@ -12,6 +12,9 @@ final class AppleHPUDPSocket: @unchecked Sendable {
     private var peer: sockaddr_in
     private let source: DispatchSourceRead
     private var active = true
+    private var sentPackets = 0
+    private var failedSends = 0
+    private var filteredPackets = 0
     private let receive: @Sendable (Data) -> Void
 
     static func resolveIPv4(host: String) async throws -> String {
@@ -79,12 +82,29 @@ final class AppleHPUDPSocket: @unchecked Sendable {
         queue.async { [weak self] in
             guard let self, self.active else { return }
             var endpoint = self.peer
-            data.withUnsafeBytes { payload in
+            let sent = data.withUnsafeBytes { payload in
                 withUnsafePointer(to: &endpoint) { address in
                     address.withMemoryRebound(to: sockaddr.self, capacity: 1) {
-                        _ = Darwin.sendto(self.descriptor, payload.baseAddress, payload.count, 0, $0, socklen_t(MemoryLayout<sockaddr_in>.size))
+                        Darwin.sendto(self.descriptor, payload.baseAddress, payload.count, 0, $0, socklen_t(MemoryLayout<sockaddr_in>.size))
                     }
                 }
+            }
+            if sent == data.count {
+                self.sentPackets += 1
+                #if DEBUG
+                if self.sentPackets == 1 || self.sentPackets % 500 == 0 {
+                    VNCControlDiagnostics.logger.notice("HP UDP sent port=\(self.peer.sin_port.bigEndian) count=\(self.sentPackets) failures=\(self.failedSends) filtered=\(self.filteredPackets)")
+                }
+                #endif
+            }
+            else {
+                let failure = errno
+                self.failedSends += 1
+                #if DEBUG
+                if self.failedSends == 1 || self.failedSends % 100 == 0 {
+                    VNCControlDiagnostics.logger.notice("HP UDP send failure port=\(self.peer.sin_port.bigEndian) errno=\(failure) failures=\(self.failedSends) sent=\(self.sentPackets)")
+                }
+                #endif
             }
             // EAGAIN/ECONNREFUSED are transient datagram loss, never teardown.
         }
@@ -116,7 +136,15 @@ final class AppleHPUDPSocket: @unchecked Sendable {
                 return
             }
             guard length == MemoryLayout<sockaddr_in>.size, sender.sin_family == sa_family_t(AF_INET),
-                  sender.sin_addr.s_addr == peer.sin_addr.s_addr, sender.sin_port == peer.sin_port else { continue }
+                  sender.sin_addr.s_addr == peer.sin_addr.s_addr, sender.sin_port == peer.sin_port else {
+                filteredPackets += 1
+                #if DEBUG
+                if filteredPackets == 1 || filteredPackets % 100 == 0 {
+                    VNCControlDiagnostics.logger.notice("HP UDP filtered port=\(self.peer.sin_port.bigEndian) count=\(self.filteredPackets)")
+                }
+                #endif
+                continue
+            }
             receive(Data(buffer.prefix(count)))
         }
     }
